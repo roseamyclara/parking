@@ -8,7 +8,7 @@
  *       沒有數字的停車場用臺中市交通局開放資料的燈號（availability.js），都與 Google 金鑰無關。
  * 沒有金鑰或載入失敗時，清單／搜尋／篩選／離我最近／地點搜尋（Nominatim）照常可用。
  */
-import { createAvailability, createCounts, countKey, STATUS } from "./availability.js";
+import { createAvailability, createCounts, countKey, STATUS } from "./availability.js?v=20261115001652";
 
 const DATA_URL = "./data/parkings.json";
 const API_KEY = String(window.GOOGLE_MAPS_API_KEY || "").trim();

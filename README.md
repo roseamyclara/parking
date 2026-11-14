@@ -28,6 +28,7 @@
 | `parking/app.js`、`parking/app.css` | 前端程式與樣式（ES module，無建置步驟） |
 | `parking/availability.js` | 即時車位：交通局燈號（瀏覽器直接抓）＋讀取 TDX 剩餘格數檔；`matchLots` 配對（可用 Node 測試） |
 | `parking/config.js` | **前端設定：Google 地圖瀏覽器金鑰與 Map ID** |
+| `parking/ASSET_VERSION` | 前端靜態檔的版本字串（`?v=`），由 `scripts/bump-asset-version.mjs` 更新 |
 | `parking/lib/` | 舊版 Leaflet 函式庫（目前已不使用，保留備查） |
 | `parking/scripts/` | 爬蟲與地理編碼程式 |
 | `parking/cache/` | 中繼檔與座標快取（自動產生、自動 commit） |
@@ -193,8 +194,28 @@ node -e 'import("./parking/availability.js").then(m=>{const fs=require("fs");con
 
 ```bash
 TDX_CLIENT_ID=… TDX_CLIENT_SECRET=… node parking/scripts/tdx_availability.mjs
-node --test parking/scripts/test_tdx_availability.mjs     # 離線測試，不需要金鑰
+node --test parking/scripts/test_*.mjs     # 離線測試（TDX、剩餘格數過舊判斷、版本字串），不需要金鑰
 ```
+
+## 改前端時：更新版本字串（快取破壞）
+
+GitHub Pages 對所有檔案送 `Cache-Control: max-age=600`，而且不能自訂標頭；回訪的手機可能繼續用舊的
+`app.js`／`availability.js`／`app.css`／`config.js`。所以這些檔案的網址都帶版本：
+
+- `index.html`：`./app.css?v=…`、`./config.js?v=…`、`./app.js?v=…`
+- `app.js`：`import … from "./availability.js?v=…"`（ES module 的 import 不會繼承上層的查詢字串，所以要寫在路徑裡）
+
+版本只有一個來源：`parking/ASSET_VERSION`（臺灣時間 `YYYYMMDDHHmmss`；不用 git hash，因為版本本身就在下一個 commit 裡）。
+**改了 HTML／JS／CSS／config.js 要 commit 時**，先執行：
+
+```bash
+node parking/scripts/bump-asset-version.mjs           # 寫 ASSET_VERSION，並更新 index.html 與 app.js 的所有 ?v=
+node parking/scripts/bump-asset-version.mjs --check   # 只檢查是否一致
+```
+
+新增要載入的前端檔案時，記得加進腳本裡的 `TARGETS`。每 5 分鐘的 TDX 工作流程**不要**執行它
+（`availability.json` 有自己的 `?t=` 每分鐘換一次）；`parkings.json` 用 `cache: "no-cache"` 讀取，也不需要版本。
+新版本最慢約 10 分鐘後（`index.html` 的 CDN／瀏覽器快取過期）才會被回訪的瀏覽器拿到。
 
 ## 日常維護
 
