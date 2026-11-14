@@ -8,7 +8,8 @@
  *       沒有數字的停車場用臺中市交通局開放資料的燈號（availability.js），都與 Google 金鑰無關。
  * 沒有金鑰或載入失敗時，清單／搜尋／篩選／離我最近／地點搜尋（Nominatim）照常可用。
  */
-import { createAvailability, createCounts, countKey, STATUS } from "./availability.js?v=20261115001652";
+import { createAvailability, createCounts, countKey, STATUS } from "./availability.js?v=20261115002414";
+import { TC_BOUNDS, keepPrediction, isTaichungPlace, autocompleteRequest } from "./region.js?v=20261115002414";
 
 const DATA_URL = "./data/parkings.json";
 const API_KEY = String(window.GOOGLE_MAPS_API_KEY || "").trim();
@@ -16,7 +17,6 @@ const MAP_ID = String(window.GOOGLE_MAPS_MAP_ID || "").trim() || "DEMO_MAP_ID";
 const CLUSTERER_URL = "https://cdn.jsdelivr.net/npm/@googlemaps/markerclusterer@2.6.2/dist/index.min.js";
 const CLUSTERER_SRI = "sha256-5CYbkAYIv0kYxvYTBB1AFQz4ajAqlmZ/gUIXFtaWgv8=";
 const TC_CENTER = { lat: 24.1477, lng: 120.6736 };
-const TC_BOUNDS = { south: 23.90, west: 120.35, north: 24.60, east: 121.50 };
 const MAX_FIT_ZOOM = 16;          // 「顯示全部結果」時最多放大到這裡
 const CLUSTER_MAX_ZOOM = 14;      // 這個縮放（含）以下才分群；15 以上一律顯示個別標記
 const FOCUS_ZOOM = CLUSTER_MAX_ZOOM + 1;
@@ -24,7 +24,8 @@ const FOCUS_MAX_ZOOM = 17;        // 搜尋地點時最多放大到這裡（避�
 const LOT_ZOOM = 16;              // 選一座停車場時的縮放
 const NEAR_KM = 0.4;              // 搜尋地點後，用來決定畫面範圍的「附近」半徑（手機面板在中段時，地圖可見高度只剩約 160px）
 const CLUSTER_PX = 40;            // 估算會不會被分群的距離（SuperCluster radius 60 / extent 512 ≈ 30px，取寬一點）
-const PLACES_BIAS = { center: TC_CENTER, radius: 40000 };   // 以臺中市中心 40 公里為優先範圍
+const PLACES_BIAS = { center: TC_CENTER, radius: 40000 };   // 以臺中市中心 40 公里為優先範圍（評論查詢用）
+const OUTSIDE_TC = "這個地點不在臺中市，請改選臺中的地點";
 
 // 搜尋建議
 const SUGG_LOTS = 6, SUGG_PLACES = 5, SUGG_MIN = 2, SUGG_DEBOUNCE = 300;
@@ -264,10 +265,10 @@ function statusHTML(id, detailed) {
     return detailed ? '<p class="status" data-s="none"><i class="sdot" aria-hidden="true"></i>無即時車位資料</p>' : "";
   }
   if (!detailed && s.code === "B") return "";   // 卡片上不顯示「無即時資料」，保持簡潔
-  const total = detailed && s.total ? '<span class="muted">・共 ' + s.total + " 格" + (s.tdx ? "（小型車）" : "") + "</span>" : "";
+  const total = detailed && s.total ? '<span class="muted">・共 ' + s.total + " 格</span>" : "";
   const label = s.tdx ? '<b class="num">' + s.label + "</b>" : s.label;
   return '<p class="status" data-s="' + s.key + '"' + (s.tdx ? " data-n" : "") + '><i class="sdot" aria-hidden="true"></i>' +
-    "<span><span class=\"visually-hidden\">" + (s.tdx ? "小型車" : "即時車位：") + "</span>" + label + total + "</span></p>";
+    "<span><span class=\"visually-hidden\">" + (s.tdx ? "剩餘車位：" : "即時車位：") + "</span>" + label + total + "</span></p>";
 }
 
 function paintAvailability() {
@@ -1411,44 +1412,53 @@ async function googlePlaces(q) {
   const { Place } = await google.maps.importLibrary("places");
   const { places } = await Place.searchByText({
     textQuery: q,
-    fields: ["displayName", "location"],
-    locationBias: { center: TC_CENTER, radius: 40000 },
+    fields: ["displayName", "location", "formattedAddress"],
+    locationRestriction: TC_BOUNDS,
     language: "zh-TW",
     region: "tw",
     maxResultCount: 1,
   });
   const p = places && places[0];
-  return p && p.location ? { lat: p.location.lat(), lng: p.location.lng() } : null;
+  return p && p.location ? { lat: p.location.lat(), lng: p.location.lng(), address: p.formattedAddress || "" } : null;
 }
 
 async function googleGeocode(q) {
   const { Geocoder } = await google.maps.importLibrary("geocoding");
   const { results } = await new Geocoder().geocode({ address: q, bounds: TC_BOUNDS, region: "tw", language: "zh-TW" });
   const r = results && results[0];
-  return r ? { lat: r.geometry.location.lat(), lng: r.geometry.location.lng() } : null;
+  return r ? { lat: r.geometry.location.lat(), lng: r.geometry.location.lng(), address: r.formatted_address || "" } : null;
 }
 
 async function nominatim(q) {
   const query = q.includes("臺中") || q.includes("台中") ? q : "臺中市 " + q;
   const url = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=tw" +
-              "&accept-language=zh-TW&viewbox=120.35,24.60,121.50,23.90&q=" + encodeURIComponent(query);
+              "&accept-language=zh-TW&bounded=1&viewbox=" + [TC_BOUNDS.west, TC_BOUNDS.north, TC_BOUNDS.east, TC_BOUNDS.south].join(",") + "&q=" + encodeURIComponent(query);
   const rows = await (await fetch(url)).json();
-  return rows && rows.length ? { lat: parseFloat(rows[0].lat), lng: parseFloat(rows[0].lon) } : null;
+  return rows && rows.length ? { lat: parseFloat(rows[0].lat), lng: parseFloat(rows[0].lon), address: rows[0].display_name || "" } : null;
 }
 
-// 有金鑰時優先用 Google（Places → Geocoding），失敗或沒結果再退回 OpenStreetMap Nominatim
+// 有金鑰時優先用 Google（Places → Geocoding），失敗或沒結果再退回 OpenStreetMap Nominatim。
+// 只接受臺中市的結果；不在臺中的換下一個方式，全都不在臺中時回傳 { outside: true }。
 async function geocodePlace(q) {
+  let outside = false;
+  const ok = (r) => {
+    if (!r) return null;
+    if (isTaichungPlace(r)) return r;
+    outside = true;
+    return null;
+  };
   if (API_KEY && G.ready && (await G.ready) && !G.failed) {
     if (!G.placesBroken) {
-      try { const r = await googlePlaces(q); if (r) return r; }
+      try { const r = ok(await googlePlaces(q)); if (r) return r; }
       catch (e) { G.placesBroken = true; console.warn("Places 搜尋失敗，改用其他方式", e); }
     }
     if (!G.geocoderBroken) {
-      try { const r = await googleGeocode(q); if (r) return r; }
+      try { const r = ok(await googleGeocode(q)); if (r) return r; }
       catch (e) { if (!/ZERO_RESULTS/.test(String(e && (e.code || e.message)))) G.geocoderBroken = true; console.warn("Geocoder 失敗", e); }
     }
   }
-  return nominatim(q);
+  const r = ok(await nominatim(q));
+  return r || (outside ? { outside: true } : null);
 }
 
 /** 自動完成的某一筆建議 → 座標。這一步用 Place.fetchFields 結束 session，只要 Essentials 欄位 */
@@ -1456,7 +1466,9 @@ async function placeFromPrediction(p) {
   const place = p.pred.toPlace();   // 會帶著同一個 session token
   await place.fetchFields({ fields: ["location", "displayName", "formattedAddress"] });
   const loc = place.location;
-  return loc ? { lat: loc.lat(), lng: loc.lng(), label: place.displayName || p.main } : null;
+  if (!loc) return null;
+  const r = { lat: loc.lat(), lng: loc.lng(), address: place.formattedAddress || "", label: place.displayName || p.main };
+  return isTaichungPlace(r) ? r : { outside: true };
 }
 
 let placeBusy = false;
@@ -1479,6 +1491,7 @@ async function searchPlace(text, { pred = null } = {}) {
       catch (e) { console.warn("無法取得 Google 地點座標，改用其他方式", e); }
     }
     if (!r) r = await geocodePlace(p ? [p.main, p.sub].filter(Boolean).join(" ") : q);
+    if (r && r.outside) { toast(OUTSIDE_TC); return; }
     if (!r) { toast("找不到「" + q + "」這個地點"); return; }
     const label = r.label || (p ? p.main : q);
     state.query = "";
@@ -1688,16 +1701,10 @@ async function fetchPlaces(q, seq) {
     const lib = await google.maps.importLibrary("places");
     if (seq !== sg.seq) return;
     if (!sg.token) sg.token = new lib.AutocompleteSessionToken();   // 新的工作階段才建立新 token
-    const { suggestions } = await lib.AutocompleteSuggestion.fetchAutocompleteSuggestions({
-      input: q,
-      sessionToken: sg.token,
-      locationBias: PLACES_BIAS,
-      includedRegionCodes: ["tw"],
-      language: "zh-TW",
-      region: "tw",
-    });
+    // 只用 locationRestriction（臺中市範圍）；API 不允許同時送 locationBias。不在臺中的建議在前端再過濾一次
+    const { suggestions } = await lib.AutocompleteSuggestion.fetchAutocompleteSuggestions(autocompleteRequest(q, sg.token));
     if (seq !== sg.seq || el.q.value.trim() !== q) return;
-    sg.places = (suggestions || []).map((s) => s.placePrediction).filter(Boolean).map((pp) => ({
+    sg.places = (suggestions || []).map((s) => s.placePrediction).filter(keepPrediction).map((pp) => ({
       id: pp.placeId,
       main: (pp.mainText && pp.mainText.text) || (pp.text && pp.text.text) || "",
       sub: (pp.secondaryText && pp.secondaryText.text) || "",

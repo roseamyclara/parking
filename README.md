@@ -27,6 +27,7 @@
 | `parking/index.html` | 網站本體（入口） |
 | `parking/app.js`、`parking/app.css` | 前端程式與樣式（ES module，無建置步驟） |
 | `parking/availability.js` | 即時車位：交通局燈號（瀏覽器直接抓）＋讀取 TDX 剩餘格數檔；`matchLots` 配對（可用 Node 測試） |
+| `parking/region.js` | 只收臺中市的地點：Autocomplete 的 `locationRestriction`、地址／座標檢查（可用 Node 測試） |
 | `parking/config.js` | **前端設定：Google 地圖瀏覽器金鑰與 Map ID** |
 | `parking/ASSET_VERSION` | 前端靜態檔的版本字串（`?v=`），由 `scripts/bump-asset-version.mjs` 更新 |
 | `parking/lib/` | 舊版 Leaflet 函式庫（目前已不使用，保留備查） |
@@ -194,7 +195,7 @@ node -e 'import("./parking/availability.js").then(m=>{const fs=require("fs");con
 
 ```bash
 TDX_CLIENT_ID=… TDX_CLIENT_SECRET=… node parking/scripts/tdx_availability.mjs
-node --test parking/scripts/test_*.mjs     # 離線測試（TDX、剩餘格數過舊判斷、版本字串），不需要金鑰
+node --test parking/scripts/test_*.mjs     # 離線測試（TDX、剩餘格數過舊判斷、版本字串、臺中市地點過濾），不需要金鑰
 ```
 
 ## 改前端時：更新版本字串（快取破壞）

@@ -5,7 +5,7 @@
 //   node parking/scripts/bump-asset-version.mjs          # 用現在的臺灣時間
 //   node parking/scripts/bump-asset-version.mjs --check  # 只檢查是否一致，不改檔（不一致時以非 0 結束）
 //
-// 改了 index.html／app.js／availability.js／app.css／config.js 要 commit 時執行一次。
+// 改了 index.html／app.js／availability.js／region.js／app.css／config.js 要 commit 時執行一次。
 // 不要放進每 5 分鐘的 TDX 工作流程（availability.json 自己有 ?t= 每分鐘換一次）。
 import fs from "node:fs";
 import path from "node:path";
@@ -17,7 +17,7 @@ const VERSION_FILE = path.join(ROOT, "ASSET_VERSION");
 // 每個檔案裡要加版本的資源，以及預期出現幾次（少了就報錯，避免默默漏掉）
 const TARGETS = {
   "index.html": { "app.css": 1, "config.js": 1, "app.js": 1 },
-  "app.js": { "availability.js": 1 },
+  "app.js": { "availability.js": 1, "region.js": 1 },
 };
 
 export function taipeiStamp(date = new Date()) {
