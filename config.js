@@ -6,10 +6,10 @@
  * 千萬不要把伺服器端那把金鑰貼到這裡。
  */
 
-// Browser Maps JavaScript API key (already used by other pages in this repo).
+// Browser Maps JavaScript API key for project taichung-parking-map.
 // Leave as "" to show a friendly fallback instead of a broken map.
 // Restrict in Google Cloud Console to HTTP referrers: https://roseamyclara.github.io/*
-window.GOOGLE_MAPS_API_KEY = "AIzaSyC1qbK8BJfV7IZqYf0wxLGQvyDdCt3Pv7E";
+window.GOOGLE_MAPS_API_KEY = "AIzaSyAX6vaVXAjwc359knQLZmoTYL4fWifLy04";
 
 // Map ID — required for Advanced Markers. "DEMO_MAP_ID" is Google's public
 // placeholder; replace with your own Map ID from Cloud Console if you like.

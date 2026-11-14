@@ -57,7 +57,7 @@ window.GOOGLE_MAPS_API_KEY = "AIza…";   // 瀏覽器端金鑰，會公開在�
 window.GOOGLE_MAPS_MAP_ID  = "DEMO_MAP_ID"; // 進階標記需要；可換成自己的 Map ID
 ```
 
-- 目前沿用本 repo 其他頁面（`place.html`、`disablemap.html`）已公開的同一把瀏覽器金鑰。
+- 使用 Google Cloud 專案 `taichung-parking-map` 的瀏覽器金鑰（已啟用帳單，HTTP 參照網址限制為 `https://roseamyclara.github.io/*`）。請勿與 `place.html`、`disablemap.html` 的舊金鑰混用。
 - **沒有金鑰**（設成 `""`）：完全不載入 Google 的程式，地圖區改顯示「尚未設定 Google 地圖金鑰」說明。
   清單、關鍵字搜尋、篩選、離我最近、地點搜尋（Nominatim）、導航連結都照常可用。
 - **有金鑰但載入失敗**（金鑰無效、網域未授權、帳單或 API 未啟用、網路斷線、逾時）：
