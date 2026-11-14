@@ -31,8 +31,9 @@
 
 ## 功能
 
-- 🔍 關鍵字搜尋停車場名稱、路名、行政區
-- 📍 地點搜尋：輸入「臺中車站」「中國醫藥大學」等任意地點，找出附近停車場並依距離排序
+- 🔍 關鍵字搜尋停車場名稱、路名、行政區；打字時搜尋列下方出現**建議清單**：「停車場」（本站資料）＋「地點」（Google 自動完成）
+- 📍 地點搜尋：輸入「臺中車站」「中國醫藥大學」等任意地點，找出附近停車場並依距離排序；地圖會放大到附近停車場都是個別標記（不會只剩一個分群圓圈）
+- ⭐ 停車場詳情裡的「Google 的評分與評論」（只在打開詳情時載入，見下方說明）
 - 🧭 「離我最近」瀏覽器定位排序
 - 🏷 依行政區、免銷單進出場方式篩選（收在搜尋列右側的「篩選與設定」）
 - 🚦 即時車位燈號（尚有車位／即將滿場／已滿），約每分鐘更新
@@ -53,6 +54,58 @@
 - 深淺色：依頁面目前的外觀建立地圖（`colorScheme: DARK / LIGHT`），切換外觀時會自動重建地圖。
 - 地點搜尋：有金鑰時先用 Places API（New）的文字搜尋，再試 Geocoding，
   都失敗或沒結果就退回 OpenStreetMap Nominatim（以臺中為優先範圍）。
+- 分群：縮放 14（含）以下才分群（`SuperClusterAlgorithm` 的 `maxZoom: 14`），15 以上一律是個別標記。
+  搜尋地點／離我最近時，鏡頭以起點為中心、只納入 400 公尺內最近幾座停車場，並至少放大到 15；
+  選一座停車場時放大到 16。「顯示全部結果」（Enter、行政區篩選）仍維持全市範圍、可以分群。
+
+### 搜尋建議（停車場＋地點）
+
+- **停車場**：本機比對名稱／地址／位置／行政區（和清單同一套正規化，`台`＝`臺`），尊重目前的篩選，最多 6 筆，不連網。
+- **地點**：`google.maps.importLibrary("places")` → `AutocompleteSuggestion.fetchAutocompleteSuggestions`，
+  至少 2 個字、停止輸入 300ms 後才送；`locationBias` 是臺中市中心半徑 40 公里，`language: "zh-TW"`、`region: "tw"`、
+  `includedRegionCodes: ["tw"]`，**不設** `includedPrimaryTypes`（車站、醫院、地址都要）。最多 5 筆，和停車場同名的略過。
+  顯示的是預測本身的 `mainText`／`secondaryText`，不會為了顯示建議而查 Place Details。
+- **Session token**：一次輸入共用一個 `AutocompleteSessionToken`；選了建議、清空輸入框、按 Esc／點外面放棄、
+  或 Enter 只看停車場結果，這個 session 就結束，下次打字才建立新的 token。
+- **選地點**：`placePrediction.toPlace().fetchFields({ fields: ["location", "displayName", "formattedAddress"] })`
+  結束 session（只要 Essentials 欄位，**不要**評分、評論等），再設為起點。
+- **最後一列「以「…」搜尋這個地點」／沒有符合的停車場時按 Enter**：session 裡已有這段文字的建議就用第一筆（同上，Essentials），
+  否則走原本的 Places 文字搜尋（`displayName` + `location`）→ Geocoding → Nominatim。
+- 鍵盤：combobox／listbox（`aria-expanded`、`aria-controls`、`aria-activedescendant`）。注音／倉頡選字時
+  （`isComposing` 或 `keyCode 229`）Enter／方向鍵／Esc 都交給輸入法，也不會送自動完成；選字結束才開始計時。
+  Android 返回鍵、Esc、點清單以外的地方都會先關掉建議清單。
+- Google 不能用（沒有金鑰、地圖載入失敗、API 被拒）時只顯示停車場建議與後備列，搜尋照常可用。
+
+### 停車場詳情：Google 的評分與評論
+
+只有在**打開某一座停車場的詳情**時才載入；清單卡片、地圖標記、畫面外的停車場都不會抓，也不預先抓。
+
+1. 停車場對應的 Google 地點：`parkings.json` 若有 `place_id`（每日排程會補，見下方）就直接用；
+   沒有的話用 `Place.searchByText`（停車場名稱＋地址、以停車場座標為偏好、`maxResultCount: 1`），
+   **`fields: ["id"]` 只要 id**，查到的 id 存在 localStorage（查不到的 3 天內不再查）。
+2. `new Place({ id }).fetchFields({ fields: ["rating", "userRatingCount", "reviews", "googleMapsURI"] })`，只要這四個欄位。
+3. 結果（評分、評論數、評論、Google 地圖連結）存在 localStorage **7 天**；同一座再打開完全不連網。快取 JSON 壞掉會自動丟掉重抓。
+4. 安全閥：同一個瀏覽器每天（臺灣時間）最多 25 次評論查詢（只算真的打到 Place Details 的，不算快取），
+   超過就顯示說明與「在 Google 地圖開啟」連結。
+5. 版面：和本站／交通局資料分開的區塊，標題「Google 的評分與評論」、註明「資料來自 Google 地圖」；
+   數字評分＋依分數比例填滿的星星＋評論數；每則評論有作者（有頭像與個人頁連結時一起顯示）、星等、相對時間、內文（長的可展開）、
+   「在 Google 地圖查看這則評論」與「檢舉」連結；最下方「在 Google 地圖開啟」。
+6. 沒有金鑰、地圖載入失敗、找不到對應地點、額度用盡或被拒時，只顯示一行說明與 Google 地圖搜尋連結；導航、車位燈號等其餘詳情不受影響。
+
+> 評分與評論是 **Google 地圖使用者提供的內容**，可能缺漏或對應錯誤，**不是交通局的官方資料**。
+
+### 用到的 Google API 與計費 SKU
+
+| 時機 | 呼叫 | SKU |
+| --- | --- | --- |
+| 打字時的「地點」建議 | `AutocompleteSuggestion.fetchAutocompleteSuggestions`（帶 session token） | Autocomplete Requests；session 以選地點結束時改計 Autocomplete Session Usage |
+| 選了一個「地點」 | `Place.fetchFields(["location","displayName","formattedAddress"])` | Place Details Essentials |
+| 停車場 → Google 地點（瀏覽器，只在沒有 `place_id` 時） | `Place.searchByText`，`fields: ["id"]` | Text Search Essentials (IDs Only) |
+| 停車場 → Google 地點（每日排程） | `POST places.googleapis.com/v1/places:searchText`，`X-Goog-FieldMask: places.id` | Text Search Essentials (IDs Only) |
+| 詳情裡的評分與評論 | `Place.fetchFields(["rating","userRatingCount","reviews","googleMapsURI"])` | **Place Details Enterprise + Atmosphere**（`reviews` 屬於 Atmosphere，整次呼叫都以這個 SKU 計費；靠 7 天快取與每日上限控制用量） |
+| 「以…搜尋這個地點」沒有建議可用時 | `Place.searchByText`（`displayName`、`location`）→ Geocoding → Nominatim | 原本就有的流程 |
+
+瀏覽器金鑰需要啟用 **Maps JavaScript API** 與 **Places API (New)**。
 
 ### `parking/config.js`
 
@@ -130,12 +183,26 @@ node -e 'import("./parking/availability.js").then(m=>{const fs=require("fs");con
    - Secret：貼上金鑰
 5. 刪掉 `parking/cache/geocache.json`，再手動跑一次 workflow，就會用 Google 全部重查一遍。
 
+### 自動補上 Google `place_id`（選用）
+
+有 `GOOGLE_MAPS_API_KEY` secret 時，`geocode.py` 在處理完座標之後，會替**還沒有 `place_id`** 的停車場補上一個：
+
+- 用 **Places API (New)** 的 Text Search：`POST https://places.googleapis.com/v1/places:searchText`，
+  `X-Goog-FieldMask: places.id`（只有 id → SKU「Text Search Essentials IDs Only」，不計費），
+  `textQuery` 是名稱＋地址、`languageCode: zh-TW`、`regionCode: TW`、`maxResultCount: 1`，以快取座標為 `locationBias`。
+- 結果寫進 `geocache.json` 那一筆的 `place_id`，並輸出到 `parkings.json` 的同名欄位（選用欄位，前端沒有也照常運作）。
+  查不到的記下 `place_id_miss`，30 天後才再試。
+- **不會重查既有座標**，也不需要 `--refresh-all`；不想補就加 `--no-place-ids`。
+- 伺服器金鑰要另外啟用 **Places API (New)**。沒啟用、被拒或超額（401／403／429）只會印警告並略過，照常輸出資料；
+  **不會**退回舊版（計費的）Places Text Search。
+- 有了 `place_id`，網頁打開詳情時就不必再做 Text Search，直接查評分與評論。
+
 ## 本機測試（選用）
 
 ```bash
 pip install -r parking/scripts/requirements.txt
 
-python parking/scripts/test_scrape.py     # 離線測試解析邏輯，不連網
+python parking/scripts/test_scrape.py     # 離線測試解析邏輯與 place_id 補值，不連網
 python parking/scripts/scrape.py          # 抓表格
 python parking/scripts/geocode.py         # 產生 parking/data/parkings.json
 python parking/scripts/geocode.py --limit 20   # 只先處理 20 筆，測試用
@@ -148,7 +215,9 @@ cd parking && python -m http.server 8000  # 開 http://localhost:8000
 
 ```text
 本機快速檢查清單
-- 清單出現 290 筆、輸入「大里」會篩選、Enter 在注音選字時不會送出
+- 清單出現 290 筆、輸入「大里」會篩選並出現「停車場」建議、Enter 在注音選字時不會送出
+- 建議清單可用上下鍵移動、Enter 選取、Esc 關閉；選停車場會打開詳情並放大到該處
+- （本機若 Google 不能用）建議只有停車場與「以「…」搜尋這個地點」；詳情的「Google 的評分與評論」顯示一行說明
 - 輸入「臺中車站」→ 點搜尋列下方「以「臺中車站」為地點搜尋附近」（或直接按 Enter）→ 依距離排序並出現起點
 - 「離我最近」會要求定位權限；拒絕時顯示提示
 - 手機寬度（≤ 820px）是全螢幕地圖＋底部面板：拖曳把手可在三段高度間切換；點卡片或標記會打開詳情；
@@ -165,6 +234,8 @@ cd parking && python -m http.server 8000  # 開 http://localhost:8000
 | Actions 在 commit 那步失敗，寫 permission denied | Settings → Actions → General → Workflow permissions 要設成 **Read and write**。 |
 | 爬蟲失敗「只解析到 N 筆」 | 對方網站改版了。`scripts/scrape.py` 的 `COLUMN_MAP` 是用表頭文字比對，把新欄位名稱加進去即可。程式刻意在這種情況中止，不會覆蓋掉原本正確的資料。 |
 | 某幾個停車場座標偏掉 | 原始資料的「位置」欄常常只有路名沒門牌，只能定位到路段。可以直接編輯 `parking/cache/geocache.json` 裡那一筆的 `lat`／`lng`，之後更新會沿用你改的值。 |
+| 詳情顯示「找不到對應地點」或沒有評論 | Google 上沒有這個停車場、或名稱對不上。可以等每日排程補上 `place_id`；也可清除瀏覽器的網站資料重試。 |
+| 評分區塊說「沒有開放給這個網站使用」 | 瀏覽器金鑰沒有啟用 Places API (New)，或參照網址限制不含目前網址。 |
 | 地點搜尋沒反應 | 沒有可用的 Google Places 時會改用 OpenStreetMap 免費服務，偶爾限流，稍等再試。 |
 | 地圖區顯示「尚未設定 Google 地圖金鑰」 | `parking/config.js` 的 `GOOGLE_MAPS_API_KEY` 是空的。 |
 | 地圖區顯示「Google 地圖暫時無法顯示」 | 括號內會寫原因：帳單未啟用、API 未啟用、網址未列在參照網址限制中、金鑰無效等，照上面「上線前的 Google Cloud 設定」檢查。 |
@@ -172,6 +243,7 @@ cd parking && python -m http.server 8000  # 開 http://localhost:8000
 ## 資料來源與免責
 
 - 資料來源：[臺中市停車資訊網 — 身障免銷單服務已上線停車場](https://tcparking.taichung.gov.tw/ParkWeb/Pages/PublicService/LoveCardSchedule)
+- 地點建議、評分與評論：Google 地圖（Places API (New)），屬於 Google 使用者內容，非官方資料
 - 地圖：[Google 地圖](https://www.google.com/maps)（Maps JavaScript API）、[@googlemaps/markerclusterer](https://github.com/googlemaps/js-markerclusterer)
 - 座標（每日排程）與備援地點搜尋：[OpenStreetMap](https://www.openstreetmap.org/copyright) 貢獻者（Nominatim）
 - 座標為地理編碼推估結果，實際位置以現場標示為準；免銷單服務內容一律以臺中市政府交通局公告為準。

@@ -30,7 +30,8 @@
         <svg class="pill-ico" aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="m15.5 15.5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         <label class="visually-hidden" for="q">搜尋停車場名稱、路名、行政區，或輸入地點</label>
         <input id="q" type="search" inputmode="search" enterkeyhint="search" autocomplete="off"
-               autocapitalize="off" spellcheck="false" placeholder="搜尋停車場或地點">
+               autocapitalize="off" spellcheck="false" placeholder="搜尋停車場或地點"
+               role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="suggList" aria-describedby="suggHint">
         <button class="iconbtn clear" id="clearQ" type="button" aria-label="清除搜尋" hidden>
           <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
         </button>
@@ -40,7 +41,15 @@
           <span class="visually-hidden">篩選與設定</span>
           <span class="badge" id="filterBadge" hidden></span>
         </button>
+
+        <!-- 搜尋建議：停車場（本站資料）＋地點（Google，自動完成）。浮在搜尋列下方、地圖與面板之上 -->
+        <div class="sugg" id="sugg" hidden>
+          <div id="suggList" role="listbox" aria-label="搜尋建議"></div>
+          <p class="sg-foot" id="suggFoot" hidden>地點建議由 Google 提供</p>
+        </div>
+        <span class="visually-hidden" id="suggHint">輸入時會出現建議，可用上下鍵選擇、Enter 確認、Esc 關閉。</span>
       </form>
+      <p class="visually-hidden" id="suggStatus" role="status" aria-live="polite"></p>
 
       <button type="button" class="suggest" id="placeSearchBtn" hidden>
         <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="10" r="2.3" fill="currentColor"/></svg>
@@ -136,6 +145,7 @@
             <p id="footDates"></p>
             <p>停車場名單：<a href="https://tcparking.taichung.gov.tw/ParkWeb/Pages/PublicService/LoveCardSchedule" target="_blank" rel="noopener">臺中市停車資訊網 — 身障免銷單服務已上線停車場</a>（每日 00:00 自動更新）。</p>
             <p>即時車位燈號：<a href="https://motoretag.taichung.gov.tw/DataAPI/api/ParkingAPIV2/Opendata" target="_blank" rel="noopener">臺中市政府交通局「路外剩餘車位」開放資料</a>，約每分鐘更新。只提供「尚有車位／即將滿場／已滿」燈號，不是剩餘車位數；以名稱比對，部分停車場沒有即時資料。<span id="availNote"></span></p>
+            <p>評分與評論：來自 Google 地圖的使用者內容，只有在打開某座停車場的詳情時才會載入（並暫存在這台裝置上約 7 天），可能對應不到或沒有資料；<strong>不是交通局的官方資料</strong>，也不代表本站立場。搜尋時的「地點」建議同樣由 Google 提供。</p>
             <p>地圖：Google 地圖。座標由地理編碼推估，實際位置請以現場標示為準；免銷單服務內容與適用對象，一律以臺中市政府交通局公告為準。</p>
             <p><strong>本站為民間製作的資料整理工具，非官方網站。</strong></p>
           </section>

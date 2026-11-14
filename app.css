@@ -142,6 +142,7 @@ p, li { text-wrap: pretty; }
 /* ---------- 搜尋列 ---------- */
 .brand { margin: 0; }
 .pill {
+  position: relative;
   display: flex; align-items: center; gap: 0.125rem;
   min-block-size: 3.25rem; margin: 0;
   padding-inline: 0.875rem 0.25rem;
@@ -190,6 +191,46 @@ p, li { text-wrap: pretty; }
 }
 .originchip > svg { flex: none; color: var(--accent); }
 .originchip-text { min-inline-size: 0; }
+
+/* ---------- 搜尋建議（停車場＋地點）：浮在搜尋列下方，蓋過地圖與面板 ---------- */
+.sugg {
+  position: absolute; z-index: 30; inset-inline: 0; top: calc(100% + 0.5rem);
+  max-block-size: min(34rem, calc(var(--vvh, 100dvh) - env(safe-area-inset-top) - 5rem));
+  overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+  padding: 0.375rem; border-radius: 1.25rem;
+  background: var(--surface); color: var(--text); box-shadow: var(--shadow-2);
+  text-align: start;
+}
+.sg-group + .sg-group { border-block-start: 1px solid var(--line); margin-block-start: 0.25rem; padding-block-start: 0.25rem; }
+.sg-label {
+  padding: 0.5rem 0.75rem 0.25rem;
+  font-size: 0.75rem; font-weight: 650; color: var(--muted); letter-spacing: 0.04em;
+}
+.sg-opt {
+  display: flex; align-items: center; gap: 0.75rem;
+  min-block-size: 3.25rem; padding: 0.5rem 0.75rem;
+  border-radius: 0.875rem; cursor: pointer;
+  -webkit-user-select: none; user-select: none;
+}
+.sg-opt:hover, .sg-opt[aria-selected="true"] { background: var(--accent-soft); }
+.sg-ico {
+  flex: none; inline-size: 2rem; block-size: 2rem; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--surface-2); color: var(--muted);
+}
+.sg-ico.lot { background: var(--accent); color: var(--accent-ink); font: 700 0.8125rem/1 var(--font); forced-color-adjust: none; }
+.sg-txt { flex: 1; min-inline-size: 0; display: grid; gap: 0.0625rem; }
+.sg-main {
+  font-size: 1rem; line-height: 1.35;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+}
+.sg-main mark { background: none; color: inherit; font-weight: 700; }
+.sg-main strong { color: var(--accent); }
+.sg-sub {
+  font-size: 0.8125rem; line-height: 1.4; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sg-foot { margin: 0.25rem 0.75rem 0.25rem; font-size: 0.6875rem; color: var(--muted); text-align: end; }
 
 /* ---------- 離我最近 ---------- */
 .fab {
@@ -310,6 +351,62 @@ p, li { text-wrap: pretty; }
 .d-info dt { font-size: 0.8125rem; color: var(--muted); }
 .d-info dd { margin: 0.125rem 0 0; }
 .d-note { margin: 1rem 0 0; font-size: 0.8125rem; color: var(--muted); }
+
+/* ---------- 詳情：Google 的評分與評論（和本站／交通局資料分開的區塊） ---------- */
+.g-box {
+  margin-block: 1.5rem 0.5rem; padding: 1rem 1rem 0.75rem;
+  border-radius: var(--r-card); background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+.g-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 0.75rem; }
+.g-head h3 { margin: 0; font-size: 1rem; font-weight: 650; }
+.g-attr { font-size: 0.75rem; color: var(--muted); }
+.g-msg { margin: 0.75rem 0 0; font-size: 0.9375rem; color: var(--muted); }
+.g-loading::before {
+  content: ""; display: inline-block; inline-size: 0.875rem; block-size: 0.875rem; margin-inline-end: 0.5rem;
+  vertical-align: -0.125rem; border-radius: 50%;
+  border: 2px solid var(--line); border-block-start-color: var(--accent);
+  animation: spin 0.9s linear infinite;
+}
+.g-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.625rem; margin: 0.75rem 0 0.25rem; }
+.g-num { font-size: 2rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.g-count { font-size: 0.875rem; color: var(--muted); }
+/* 星星：底色 5 顆，上面依實際分數蓋上對應寬度（4.3 就是 86%），不會四捨五入成 4 或 5 顆 */
+.stars {
+  --star-on: var(--few); --star-off: color-mix(in oklab, var(--muted) 35%, transparent);
+  position: relative; display: inline-block; flex: none;
+  font-size: 1.25rem; line-height: 1; letter-spacing: 0.05em; white-space: nowrap;
+  font-family: system-ui, sans-serif;
+}
+.stars::before { content: "★★★★★"; content: "★★★★★" / ""; color: var(--star-off); }
+.stars::after {
+  content: "★★★★★"; content: "★★★★★" / "";
+  position: absolute; inset-block-start: 0; inset-inline-start: 0;
+  inline-size: calc(var(--r, 0) / 5 * 100%); overflow: hidden; color: var(--star-on);
+}
+.stars.sm { font-size: 0.9375rem; }
+.g-reviews { list-style: none; margin: 0.75rem 0 0; padding: 0; display: grid; gap: 0; }
+.g-rv { padding-block: 0.875rem; border-block-start: 1px solid var(--line); }
+.g-rv-head { display: flex; align-items: center; gap: 0.625rem; }
+.g-av {
+  flex: none; inline-size: 2.25rem; block-size: 2.25rem; border-radius: 50%;
+  object-fit: cover; background: var(--surface);
+}
+.g-av-empty { display: grid; place-items: center; font-weight: 650; color: var(--muted); border: 1px solid var(--line); }
+.g-rv-who { min-inline-size: 0; display: grid; }
+.g-author { font-weight: 650; font-size: 0.9375rem; color: var(--text); }
+a.g-author { text-decoration: underline; text-decoration-color: color-mix(in oklab, var(--text) 30%, transparent); }
+.g-rv-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.125rem 0.5rem; font-size: 0.8125rem; color: var(--muted); }
+.g-text { margin: 0.5rem 0 0; font-size: 0.9375rem; line-height: 1.6; white-space: pre-line; }
+.g-text.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; line-clamp: 4; overflow: hidden; }
+.g-more { min-block-size: var(--tap); padding-inline: 0; }
+.g-rv-links { margin: 0.25rem 0 0; font-size: 0.8125rem; color: var(--muted); }
+.g-rv-links a { display: inline-block; padding-block: 0.375rem; color: var(--muted); }
+.g-rv-links .sep { margin-inline: 0.4em; }
+.g-all { margin-block: 0.25rem; padding-inline: 0.75rem; }
+.g-foot { margin: 0.75rem 0 0.25rem; }
+.g-open { inline-size: 100%; min-block-size: 3rem; }
+.g-open svg { flex: none; }
 
 /* ---------- 篩選與設定 ---------- */
 .view-filters { padding: 0.25rem var(--pad-r) 0 var(--pad-x); display: grid; gap: 1.5rem; }
@@ -507,7 +604,8 @@ p, li { text-wrap: pretty; }
     background: var(--surface);
     box-shadow: 1px 0 0 var(--line), 4px 0 16px color-mix(in oklab, var(--shadow-c) 50%, transparent);
   }
-  .searchbar { padding: 1rem 1rem 0.5rem; }
+  .searchbar { position: relative; z-index: 3; padding: 1rem 1rem 0.5rem; }
+  .sugg { box-shadow: var(--shadow-2), 0 0 0 1px var(--line); max-block-size: min(36rem, calc(100dvh - 7rem)); }
   .brand { font-size: 0.8125rem; font-weight: 600; color: var(--muted); margin: 0 0 0.625rem 0.5rem; }
   .pill { background: var(--surface-2); box-shadow: none; }
   .suggest, .originchip { box-shadow: none; }
@@ -524,7 +622,10 @@ p, li { text-wrap: pretty; }
 
 /* ---------- Windows 高對比 / forced colors ---------- */
 @media (forced-colors: active) {
-  .pill, .suggest, .originchip, .card, .chip, .btn, .nav, .fab, .seg, .selectwrap select, .d-status { border: 1px solid CanvasText; }
+  .pill, .suggest, .originchip, .card, .chip, .btn, .nav, .fab, .seg, .selectwrap select, .d-status, .sugg, .g-box { border: 1px solid CanvasText; }
+  .sg-opt[aria-selected="true"] { outline: 2px solid Highlight; outline-offset: -2px; }
+  .sg-ico.lot { forced-color-adjust: auto; border: 1px solid CanvasText; }
+  .stars { --star-on: CanvasText; --star-off: GrayText; }
   .card.active, .chip[aria-pressed="true"], .seg label:has(input:checked) { outline: 3px solid Highlight; outline-offset: -3px; }
   .badge { border: 1px solid CanvasText; }
   :focus-visible, .card:has(.main:focus-visible) { outline-color: Highlight; }
@@ -543,4 +644,5 @@ p, li { text-wrap: pretty; }
   }
   .btn:active { scale: none; }
   .fab[aria-busy="true"] .fab-ico { animation: none; }
+  .g-loading::before { animation: none; }
 }

@@ -13,10 +13,15 @@
 若沒有金鑰，會改用 OpenStreetMap Nominatim（免費、精度略低），
 仍可產出可用的網站資料。
 
+有金鑰時，座標處理完之後會替「還沒有 place_id」的停車場補上 Google place_id
+（Places API (New) Text Search，欄位遮罩只有 places.id → SKU「Text Search Essentials IDs Only」，不計費）。
+不會重查既有座標；New API 沒啟用或查詢失敗只會印警告，照常輸出資料。
+
 用法：
     python parking/scripts/geocode.py                # 一般執行（用快取）
     python parking/scripts/geocode.py --refresh-all  # 忽略快取全部重查（會計費，慎用）
     python parking/scripts/geocode.py --provider osm # 強制使用 Nominatim
+    python parking/scripts/geocode.py --no-place-ids # 不補 place_id
 """
 
 from __future__ import annotations
@@ -46,6 +51,12 @@ TC_CENTER = (24.1477, 120.6736)
 PLACES_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
 GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+# Places API (New)。只要 id：Text Search Essentials (IDs Only)。
+# 不要退回舊版 textsearch/json（那個會計費）。
+PLACES_NEW_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+PLACE_ID_FIELD_MASK = "places.id"
+# 查不到對應地點的，隔這麼多天才再試
+PLACE_ID_RETRY_DAYS = 30
 
 NOMINATIM_UA = "taichung-lovecard-parking-map/1.0 (github pages static site)"
 
@@ -163,6 +174,114 @@ def google_geocode(address: str, api_key: str) -> dict | None:
 
 
 # --------------------------------------------------------------------------
+# Google place_id（Places API New，IDs Only）
+# --------------------------------------------------------------------------
+
+class PlacesNewUnavailable(RuntimeError):
+    """金鑰沒有權限、API 沒啟用或超額：這一輪不要再查了。"""
+
+
+def place_id_request(item: dict, geo: dict | None) -> dict:
+    """組出 Text Search (New) 的 request body。只放 IDs Only 允許的參數。"""
+    address = item.get("address") or item.get("location") or ""
+    body: dict = {
+        "textQuery": f"{item['name']} {address}".strip(),
+        "languageCode": "zh-TW",
+        "regionCode": "TW",
+        "maxResultCount": 1,
+    }
+    if geo and geo.get("lat") is not None and geo.get("lng") is not None:
+        coarse = geo.get("approx") or geo.get("precision") == "DISTRICT"
+        body["locationBias"] = {
+            "circle": {
+                "center": {"latitude": geo["lat"], "longitude": geo["lng"]},
+                "radius": 5000.0 if coarse else 800.0,
+            }
+        }
+    else:
+        body["locationBias"] = {
+            "circle": {
+                "center": {"latitude": TC_CENTER[0], "longitude": TC_CENTER[1]},
+                "radius": 40000.0,
+            }
+        }
+    return body
+
+
+def google_place_id(item: dict, geo: dict | None, api_key: str, post=None) -> str | None:
+    """回傳 place_id；查不到回 None。權限／額度問題丟 PlacesNewUnavailable。"""
+    post = post or requests.post
+    resp = post(
+        PLACES_NEW_SEARCH_URL,
+        json=place_id_request(item, geo),
+        headers={
+            "X-Goog-Api-Key": api_key,
+            "X-Goog-FieldMask": PLACE_ID_FIELD_MASK,
+            "Content-Type": "application/json",
+        },
+        timeout=30,
+    )
+    if resp.status_code in (401, 403, 429):
+        try:
+            err = resp.json().get("error", {})
+            detail = f"{err.get('status', '')} {err.get('message', '')}".strip()
+        except Exception:  # noqa: BLE001
+            detail = resp.text[:200]
+        raise PlacesNewUnavailable(f"HTTP {resp.status_code} {detail}")
+    resp.raise_for_status()
+    places = (resp.json() or {}).get("places") or []
+    pid = places[0].get("id") if places else None
+    return pid or None
+
+
+def fill_place_ids(items: list[dict], cache: dict, api_key: str, limit: int = 0, post=None) -> tuple[int, int]:
+    """替快取裡沒有 place_id 的停車場補上（寫回快取那一筆）。回傳 (新增, 查不到)。"""
+    now = datetime.now(TPE)
+    todo = []
+    for item in items:
+        geo = cache.get(cache_key(item))
+        if not geo or geo.get("place_id"):
+            continue
+        miss = geo.get("place_id_miss")
+        if miss:
+            try:
+                if now - datetime.fromisoformat(miss) < timedelta(days=PLACE_ID_RETRY_DAYS):
+                    continue
+            except ValueError:
+                pass
+        todo.append(item)
+    if limit and len(todo) > limit:
+        todo = todo[:limit]
+    if not todo:
+        print("[info] place_id：沒有需要補的項目")
+        return 0, 0
+
+    print(f"[info] place_id：需要補 {len(todo)} 筆（Text Search Essentials IDs Only）")
+    added = missed = 0
+    for item in todo:
+        geo = cache[cache_key(item)]
+        try:
+            pid = google_place_id(item, geo, api_key, post=post)
+        except PlacesNewUnavailable as err:
+            print(f"[warn] Places API (New) 無法使用（{err}），本次略過 place_id；"
+                  "請確認伺服器金鑰已啟用 Places API (New)", file=sys.stderr)
+            break
+        except Exception as err:  # noqa: BLE001
+            print(f"[warn] place_id 查詢失敗：{item['name']}（{err}）", file=sys.stderr)
+            continue
+        if pid:
+            geo["place_id"] = pid
+            geo.pop("place_id_miss", None)
+            added += 1
+        else:
+            geo["place_id_miss"] = now.isoformat(timespec="seconds")
+            missed += 1
+        time.sleep(0.1)
+    print(f"[ok] place_id：新增 {added} 筆、查不到 {missed} 筆")
+    return added, missed
+
+
+# --------------------------------------------------------------------------
 # OpenStreetMap fallback
 # --------------------------------------------------------------------------
 
@@ -271,6 +390,7 @@ def main() -> int:
         help="auto：有金鑰用 Google，沒有就用 OSM",
     )
     parser.add_argument("--limit", type=int, default=0, help="本次最多編碼幾筆（0 = 不限）")
+    parser.add_argument("--no-place-ids", action="store_true", help="不要補 Google place_id")
     args = parser.parse_args()
 
     raw = load_json(RAW_PATH, None)
@@ -344,6 +464,15 @@ def main() -> int:
 
         time.sleep(0.2 if provider == "osm" else 0.12)
 
+    # 補 place_id（只查還沒有的；不動座標）。沒有金鑰就略過。
+    if api_key and not args.no_place_ids:
+        try:
+            fill_place_ids(items, cache, api_key)
+        except Exception as err:  # noqa: BLE001
+            print(f"[warn] 補 place_id 時發生錯誤（{err}），略過", file=sys.stderr)
+    elif not api_key:
+        print("[info] 沒有 GOOGLE_MAPS_API_KEY，略過 place_id")
+
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     CACHE_PATH.write_text(
         json.dumps(cache, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -370,6 +499,8 @@ def main() -> int:
             rec["geo_source"] = geo.get("source", "")
             if geo.get("approx"):
                 rec["approx"] = True
+            if geo.get("place_id"):
+                rec["place_id"] = geo["place_id"]
         else:
             missing += 1
         out_items.append(rec)

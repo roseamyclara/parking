@@ -16,7 +16,23 @@ const CLUSTERER_URL = "https://cdn.jsdelivr.net/npm/@googlemaps/markerclusterer@
 const CLUSTERER_SRI = "sha256-5CYbkAYIv0kYxvYTBB1AFQz4ajAqlmZ/gUIXFtaWgv8=";
 const TC_CENTER = { lat: 24.1477, lng: 120.6736 };
 const TC_BOUNDS = { south: 23.90, west: 120.35, north: 24.60, east: 121.50 };
-const MAX_FIT_ZOOM = 16;
+const MAX_FIT_ZOOM = 16;          // 「顯示全部結果」時最多放大到這裡
+const CLUSTER_MAX_ZOOM = 14;      // 這個縮放（含）以下才分群；15 以上一律顯示個別標記
+const FOCUS_ZOOM = CLUSTER_MAX_ZOOM + 1;
+const FOCUS_MAX_ZOOM = 17;        // 搜尋地點時最多放大到這裡（避免只剩一棟樓）
+const LOT_ZOOM = 16;              // 選一座停車場時的縮放
+const NEAR_KM = 0.4;              // 搜尋地點後，用來決定畫面範圍的「附近」半徑（手機面板在中段時，地圖可見高度只剩約 160px）
+const CLUSTER_PX = 40;            // 估算會不會被分群的距離（SuperCluster radius 60 / extent 512 ≈ 30px，取寬一點）
+const PLACES_BIAS = { center: TC_CENTER, radius: 40000 };   // 以臺中市中心 40 公里為優先範圍
+
+// 搜尋建議
+const SUGG_LOTS = 6, SUGG_PLACES = 5, SUGG_MIN = 2, SUGG_DEBOUNCE = 300;
+// Google 評分與評論（localStorage 快取；保護每月免費額度）
+const LS = { pid: "pk:pid:", rv: "pk:rv:", day: "pk:rv-day" };
+const RV_TTL = 7 * 864e5;         // 評分／評論快取 7 天
+const PID_MISS_TTL = 3 * 864e5;   // 找不到對應地點：3 天內不再查
+const RV_DAILY_CAP = 25;          // 這個瀏覽器每天（臺灣時間）最多呼叫幾次 Place Details（不含快取）
+const RV_SHOW = 3;                // 先顯示幾則評論
 
 const $ = (id) => document.getElementById(id);
 const el = {};
@@ -25,6 +41,7 @@ const el = {};
  "sheet", "sheetHead", "sheetBody", "grab", "grabLabel", "list", "listTitle", "resultCount", "listSub", "resetFilters",
  "detail", "detailBack", "dName", "filtersTitle", "filtersDone", "aboutLink", "about", "availNote",
  "metaCount", "footDates", "toast", "liveCount", "mappane", "map", "mapMsg", "themeSeg", "themeSystemLbl",
+ "sugg", "suggList", "suggFoot", "suggStatus",
 ].forEach((id) => { el[id] = $(id); });
 el.heads = { list: el.sheet.querySelector(".head-list"), detail: el.sheet.querySelector(".head-detail"), filters: el.sheet.querySelector(".head-filters") };
 el.views = { list: el.sheet.querySelector(".view-list"), detail: el.detail, filters: el.sheet.querySelector(".view-filters") };
@@ -44,6 +61,14 @@ const state = {
 };
 
 const ui = { view: "list", snap: "peek", filtersFrom: null, listScroll: 0 };
+
+// 搜尋建議的狀態（Google 自動完成的 session token 也在這裡）
+const sg = {
+  open: false, rows: [], active: -1, activeKey: null,
+  places: [], placesQ: "", seq: 0, timer: 0,
+  token: null,            // AutocompleteSessionToken：一次輸入工作階段共用，結束就丟掉
+  composing: false, broken: false,
+};
 
 const root = document.documentElement;
 const mqDark = matchMedia("(prefers-color-scheme: dark)");
@@ -95,6 +120,47 @@ function h(tag, props, ...children) {
   for (const c of children) if (c != null) n.append(c);
   return n;
 }
+
+/** 只接受 https 連結（Google 回傳的網址也不直接信任） */
+const safeUrl = (u) => (typeof u === "string" && /^https:\/\//i.test(u) ? u : "");
+
+/** localStorage：讀到壞掉的 JSON 就刪掉；滿了就先清掉舊的評論快取再試一次 */
+const store = {
+  get(k) {
+    try {
+      const v = localStorage.getItem(k);
+      return v ? JSON.parse(v) : null;
+    } catch (e) { store.del(k); return null; }
+  },
+  set(k, v) {
+    let s;
+    try { s = JSON.stringify(v); } catch (e) { return false; }
+    try { localStorage.setItem(k, s); return true; } catch (e) { /* 容量不足或被停用 */ }
+    pruneReviewCache(true);
+    try { localStorage.setItem(k, s); return true; } catch (e) { return false; }
+  },
+  del(k) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } },
+};
+
+function pruneReviewCache(aggressive) {
+  try {
+    const rows = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(LS.rv)) continue;
+      const v = store.get(k);
+      rows.push([k, (v && v.fetchedAt) || 0]);
+    }
+    rows.sort((a, b) => a[1] - b[1]);
+    const now = Date.now();
+    rows.forEach(([k, t], i) => {
+      if (now - t > RV_TTL || (aggressive && i < Math.ceil(rows.length / 2))) store.del(k);
+    });
+  } catch (e) { /* ignore */ }
+}
+
+/** 臺灣時間的今天（YYYY-MM-DD），給每日上限用 */
+const taipeiDay = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date());
 
 /** 進出場方式的短標籤（卡片、篩選用）；完整文字留在詳情 */
 function shortAccess(a) {
@@ -222,6 +288,8 @@ function layout() {
   const kb = vv ? Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop)) : 0;
   root.style.setProperty("--vv-top", vvTop + "px");
   root.style.setProperty("--kb", kb + "px");
+  root.style.setProperty("--vvh", Math.round(vh) + "px");
+  geo.kb = kb;
   if (!isSheet()) {
     root.style.removeProperty("--sheet-vis");
     root.style.removeProperty("--map-bottom");
@@ -430,6 +498,7 @@ function closeDetail({ focus = true } = {}) {
 
 function openFilters() {
   if (ui.view === "filters") return;
+  if (sg.open) closeSugg({ abandon: true, history: false });
   ui.filtersFrom = { view: ui.view, snap: ui.snap };
   setView("filters");
   if (isSheet()) setSnap("full", { history: false });
@@ -460,6 +529,7 @@ el.aboutLink.addEventListener("click", () => {
 
 /** 依目前狀態關掉最上層：篩選 → 詳情 → 面板高度。沒有可關的就回傳 false */
 function closeTop({ focus = true } = {}) {
+  if (sg.open) { closeSugg({ abandon: true, history: false }); return true; }
   if (ui.view === "filters") { closeFilters({ focus }); return true; }
   if (state.activeId) { closeDetail({ focus }); return true; }
   if (isSheet() && ui.snap !== "peek") { setSnap("peek"); return true; }
@@ -469,10 +539,12 @@ function closeTop({ focus = true } = {}) {
 // ---- 歷史紀錄：每開一層就 pushState，返回鍵（Android／瀏覽器）一次關一層，不會直接離開本頁 ----
 let histDepth = 0;
 let ignorePops = 0;
+let histResync = false;   // history.go() 是非同步的：還沒回來之前先不要 pushState，等 popstate 後再對齊
 function desiredDepth() {
-  return (ui.view === "filters" ? 1 : 0) + (state.activeId ? 1 : 0) + (isSheet() && ui.snap !== "peek" ? 1 : 0);
+  return (sg.open ? 1 : 0) + (ui.view === "filters" ? 1 : 0) + (state.activeId ? 1 : 0) + (isSheet() && ui.snap !== "peek" ? 1 : 0);
 }
 function syncHistory() {
+  if (ignorePops > 0) { histResync = true; return; }
   const d = desiredDepth();
   while (histDepth < d) history.pushState({ pk: ++histDepth }, "");
   if (histDepth > d) {
@@ -483,7 +555,11 @@ function syncHistory() {
   }
 }
 window.addEventListener("popstate", () => {
-  if (ignorePops > 0) { ignorePops--; return; }
+  if (ignorePops > 0) {
+    ignorePops--;
+    if (!ignorePops && histResync) { histResync = false; syncHistory(); }
+    return;
+  }
   histDepth = Math.max(0, histDepth - 1);
   if (!closeTop({ focus: false })) {
     // 重新整理後殘留的舊紀錄：沒有東西可關就繼續往回
@@ -512,6 +588,7 @@ const G = {
   clusterer: null,
   markers: new Map(),  // id -> AdvancedMarkerElement (per map instance)
   originMarker: null,
+  camSeq: 0,           // 每次移動鏡頭 +1，舊的 idle 回呼就不再動作
   placesBroken: false,
   geocoderBroken: false,
 };
@@ -637,14 +714,15 @@ function buildMap() {
   });
   // 點地圖空白處：先收起詳情，再把面板降回最低
   G.map.addListener("click", () => {
-    if (state.activeId) closeDetail({ focus: false });
+    if (sg.open) closeSugg({ abandon: true });
+    else if (state.activeId) closeDetail({ focus: false });
     else if (ui.view === "filters") closeFilters({ focus: false });
     else if (isSheet() && ui.snap !== "peek") setSnap("peek");
   });
 
   if (G.MC && G.MC.MarkerClusterer) {
     const algorithm = G.MC.SuperClusterAlgorithm
-      ? new G.MC.SuperClusterAlgorithm({ radius: 60, maxZoom: MAX_FIT_ZOOM - 1 })
+      ? new G.MC.SuperClusterAlgorithm({ radius: 60, maxZoom: CLUSTER_MAX_ZOOM })
       : undefined;
     G.clusterer = new G.MC.MarkerClusterer({ map: G.map, algorithm, renderer: { render: renderCluster } });
   }
@@ -730,19 +808,114 @@ function mapPadding() {
   return { top: geo.topReserve + 8, right: 24, bottom: cover + 24, left: 24 };
 }
 
+/* ---------- 鏡頭：用 Web Mercator 世界座標自己算，一次移到位，不用 fitBounds 再修正 ---------- */
+function worldPx(lat, lng) {
+  const sin = Math.min(Math.max(Math.sin(lat * Math.PI / 180), -0.9999), 0.9999);
+  return { x: (lng + 180) / 360 * 256, y: (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * 256 };
+}
+function fromWorld(x, y) {
+  const n = Math.PI - 2 * Math.PI * y / 256;
+  return { lat: 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))), lng: x / 256 * 360 - 180 };
+}
+
+/** 讓 pt 落在「搜尋列以下、面板以上」那塊可見區域正中間時，地圖中心該在哪 */
+function paddedCenter(pt, zoom, pad = mapPadding()) {
+  const w = worldPx(pt.lat, pt.lng), k = 2 ** zoom;
+  return fromWorld(w.x - (pad.left - pad.right) / 2 / k, w.y - (pad.top - pad.bottom) / 2 / k);
+}
+
+/** 能把所有點放進可見區域（扣掉 padding 與標記本身的大小）的最大整數縮放，以及中心點 */
+function fitFor(pts, pad) {
+  const div = G.map.getDiv();
+  const M = 28;   // 標記約 2rem 高，邊緣留一點
+  const aw = Math.max(80, div.clientWidth - pad.left - pad.right - 2 * M);
+  const ah = Math.max(80, div.clientHeight - pad.top - pad.bottom - 2 * M);
+  const ws = pts.map((p) => worldPx(p.lat, p.lng));
+  const xs = ws.map((w) => w.x), ys = ws.map((w) => w.y);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const zx = x1 > x0 ? Math.log2(aw / (x1 - x0)) : 99;
+  const zy = y1 > y0 ? Math.log2(ah / (y1 - y0)) : 99;
+  return { zoom: Math.floor(Math.min(zx, zy)), mid: fromWorld((x0 + x1) / 2, (y0 + y1) / 2) };
+}
+
+function moveCam(center, zoom) {
+  G.camSeq++;
+  if (!mqReduce.matches && zoom === G.map.getZoom()) G.map.panTo(center);   // 同縮放時平移；減少動態效果時直接跳過去
+  else if (typeof G.map.moveCamera === "function") G.map.moveCamera({ center, zoom });
+  else G.map.setOptions({ center, zoom });
+}
+
+/** 以這幾座停車場估算：在 zoom 下會不會和別的標記被分到同一群 */
+function wouldCluster(near, zoom) {
+  if (!G.clusterer || zoom > CLUSTER_MAX_ZOOM) return false;
+  const k = 2 ** zoom;
+  const pool = state.filtered.filter(hasGeo).map((i) => [i, worldPx(i.lat, i.lng)]);
+  return near.some((a) => {
+    const wa = worldPx(a.lat, a.lng);
+    return pool.some(([b, wb]) => b !== a && Math.hypot((wa.x - wb.x) * k, (wa.y - wb.y) * k) < CLUSTER_PX);
+  });
+}
+
+/** 停好之後再確認一次：附近的停車場、或可見範圍內還有分群圓圈，就放大到不分群的縮放 */
+function ensureUnclustered(near, pt, seq) {
+  if (seq !== G.camSeq || !G.clusterer || G.map.getZoom() > CLUSTER_MAX_ZOOM) return;
+  const mine = new Set(near.map((i) => G.markers.get(i.id)).filter(Boolean));
+  const z = G.map.getZoom(), k = 2 ** z, pad = mapPadding(), div = G.map.getDiv();
+  const c0 = G.map.getCenter(), cw = worldPx(c0.lat(), c0.lng());
+  const inView = (pos) => {
+    if (!pos) return false;
+    const w = worldPx(typeof pos.lat === "function" ? pos.lat() : pos.lat, typeof pos.lng === "function" ? pos.lng() : pos.lng);
+    const x = (w.x - cw.x) * k + div.clientWidth / 2, y = (w.y - cw.y) * k + div.clientHeight / 2;
+    return x > pad.left && x < div.clientWidth - pad.right && y > pad.top && y < div.clientHeight - pad.bottom;
+  };
+  const stuck = (G.clusterer.clusters || []).some((c) => c.markers && c.markers.length > 1 &&
+    (c.markers.some((m) => mine.has(m)) || inView(c.position)));
+  if (stuck) moveCam(paddedCenter(pt, FOCUS_ZOOM), FOCUS_ZOOM);
+}
+
+/** 搜尋地點／離我最近：附近少數幾座停車場（不是前 8 座，免得縮到半個城市） */
+function nearbyLots(lat, lng) {
+  const pool = state.filtered.filter(hasGeo)
+    .map((it) => [it, haversine(lat, lng, it.lat, it.lng)])
+    .sort((a, b) => a[1] - b[1]);
+  let near = pool.filter(([, d]) => d <= NEAR_KM).slice(0, 5);
+  if (!near.length) near = pool.filter(([, d]) => d <= 2.5).slice(0, 3);
+  if (!near.length) near = pool.slice(0, 1);
+  return near.map(([it]) => it);
+}
+
+/** 把起點和附近停車場放進可見區域，而且放大到它們都是個別標記 */
+function focusArea(pt, near) {
+  if (!G.map) return;
+  const pad = mapPadding();
+  const f = fitFor([pt, ...near], pad);
+  let zoom = Math.max(11, Math.min(FOCUS_MAX_ZOOM, f.zoom));
+  let center = f.mid;
+  // 起點附近就有停車場（市區）或估計會分群：直接用不分群的縮放，以起點為中心
+  const close = near.length && haversine(pt.lat, pt.lng, near[0].lat, near[0].lng) <= 1.5;
+  if (zoom < FOCUS_ZOOM && (close || wouldCluster(near, zoom))) { zoom = FOCUS_ZOOM; center = pt; }
+  moveCam(paddedCenter(center, zoom, pad), zoom);
+  const seq = G.camSeq;
+  google.maps.event.addListenerOnce(G.map, "idle", () => setTimeout(() => ensureUnclustered(near, pt, seq), 60));
+}
+
+/** 手機鍵盤收起、面板高度變好之後再執行（最多等 600ms） */
+function whenSettled(fn) {
+  const t0 = performance.now();
+  const tick = () => {
+    layout();
+    if (geo.kb > 0 && performance.now() - t0 < 600) { setTimeout(tick, 50); return; }
+    requestAnimationFrame(fn);
+  };
+  tick();
+}
+
 function panToItem(it, fromMap) {
   if (!G.map || !hasGeo(it)) return;
-  if (!fromMap && G.map.getZoom() < MAX_FIT_ZOOM) G.map.setZoom(MAX_FIT_ZOOM);
-  let target = new google.maps.LatLng(it.lat, it.lng);
-  const proj = G.map.getProjection();
-  if (isSheet() && proj) {
-    // 讓標記落在「搜尋列以下、面板以上」那塊可見區域的中間
-    const pad = mapPadding();
-    const scale = 2 ** G.map.getZoom();
-    const p = proj.fromLatLngToPoint(target);
-    target = proj.fromPointToLatLng(new google.maps.Point(p.x, p.y - (pad.top - pad.bottom) / 2 / scale));
-  }
-  G.map.panTo(target);
+  const cur = G.map.getZoom();
+  // 從清單或搜尋建議選：放大到 16（> CLUSTER_MAX_ZOOM，周圍停車場都是個別標記）；在地圖上點的保持原縮放
+  const zoom = fromMap ? cur : Math.max(cur, LOT_ZOOM);
+  moveCam(paddedCenter({ lat: it.lat, lng: it.lng }, zoom), zoom);
 }
 
 function placeOriginMarker() {
@@ -759,12 +932,14 @@ function placeOriginMarker() {
 
 function fitPoints(pts) {
   if (!G.map || !pts.length) return;
+  const seq = ++G.camSeq;
   if (pts.length === 1) { G.map.setCenter(pts[0]); G.map.setZoom(15); return; }
   const b = new G.libs.LatLngBounds();
   pts.forEach((p) => b.extend(p));
   G.map.fitBounds(b, mapPadding());
   google.maps.event.addListenerOnce(G.map, "idle", () => {
-    if (G.map.getZoom() > MAX_FIT_ZOOM) G.map.setZoom(MAX_FIT_ZOOM);
+    // 之後若已經有別的鏡頭移動（例如選了搜尋建議），就不要再把縮放壓回來
+    if (seq === G.camSeq && G.map.getZoom() > MAX_FIT_ZOOM) G.map.setZoom(MAX_FIT_ZOOM);
   });
 }
 
@@ -924,8 +1099,228 @@ function renderDetail() {
     "</dl>" +
     (it.precision === "DISTRICT"
       ? '<p class="d-note">地圖位置只推估到行政區，僅供參考；導航會改用名稱與地址搜尋。</p>'
-      : '<p class="d-note">座標由地理編碼推估，實際位置請以現場標示為準。</p>');
+      : '<p class="d-note">座標由地理編碼推估，實際位置請以現場標示為準。</p>') +
+    googleBoxShell(it);
+  loadGoogle(it);
 }
+
+/* ---------- 詳情：Google 的評分與評論（只在打開詳情時載入，不預先抓） ---------- */
+const GR = { inflight: new Set(), broken: "" };
+const PID_NONE = "-";
+
+const lotPlaceId = (it) => it.place_id || it.placeId || null;
+function mapsSearchUrl(it, pid) {
+  const q = [it.name, it.address || it.location].filter(Boolean).join(" ");
+  return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(q) +
+    (pid ? "&query_place_id=" + encodeURIComponent(pid) : "");
+}
+
+function cachedPid(lotId) {
+  const v = store.get(LS.pid + lotId);
+  if (!v || typeof v.id !== "string") return null;
+  if (v.id === PID_NONE && Date.now() - (v.at || 0) > PID_MISS_TTL) { store.del(LS.pid + lotId); return null; }
+  return v.id;
+}
+
+function cachedReviews(pid) {
+  const k = LS.rv + pid;
+  const v = store.get(k);
+  if (!v) return null;
+  if (v.v !== 1 || v.place_id !== pid || !Array.isArray(v.reviews) || !(Date.now() - (v.fetchedAt || 0) < RV_TTL)) {
+    store.del(k);
+    return null;
+  }
+  return v;
+}
+
+function dailyCount() {
+  const v = store.get(LS.day);
+  return v && v.d === taipeiDay() ? Number(v.n) || 0 : 0;
+}
+function bumpDaily() { store.set(LS.day, { d: taipeiDay(), n: dailyCount() + 1 }); }
+
+/** Place → 只留畫面需要的欄位（也是存進 localStorage 的樣子） */
+function serializePlace(place, pid) {
+  const pick = (o, ...ks) => { for (const k of ks) if (o && o[k]) return o[k]; return ""; };
+  const reviews = (place.reviews || []).map((r) => {
+    const a = r.authorAttribution || {};
+    const t = r.publishTime ? new Date(r.publishTime).getTime() : 0;
+    return {
+      author: a.displayName || "Google 使用者",
+      authorUri: safeUrl(pick(a, "uri")),
+      photo: safeUrl(pick(a, "photoURI", "photoUri")),
+      rating: typeof r.rating === "number" ? r.rating : null,
+      when: r.relativePublishTimeDescription || "",
+      time: Number.isFinite(t) ? t : 0,
+      text: (typeof r.text === "string" ? r.text : r.text && r.text.text) || "",
+      uri: safeUrl(pick(r, "googleMapsURI", "googleMapsUri")),
+      flag: safeUrl(pick(r, "flagContentURI", "flagContentUri")),
+    };
+  });
+  return {
+    v: 1, place_id: pid,
+    rating: typeof place.rating === "number" ? place.rating : null,
+    count: place.userRatingCount || 0,
+    uri: safeUrl(pick(place, "googleMapsURI", "googleMapsUri")),
+    reviews, fetchedAt: Date.now(),
+  };
+}
+
+const fmtRating = (r) => (Math.round(r * 10) / 10).toFixed(1);
+const starsHTML = (r, cls = "") => '<span class="stars' + cls + '" style="--r:' + Math.max(0, Math.min(5, r)) + '" aria-hidden="true"></span>';
+const openLinkHTML = (href) =>
+  '<a class="btn tonal g-open" href="' + esc(href) + '" target="_blank" rel="noopener">' + ICON_PIN +
+  '在 Google 地圖開啟<span class="visually-hidden">（另開新分頁）</span></a>';
+
+function googleBoxShell(it) {
+  return '<section class="g-box" data-id="' + esc(it.id) + '" aria-labelledby="gTitle" aria-busy="true">' +
+    '<div class="g-head"><h3 id="gTitle">Google 的評分與評論</h3><span class="g-attr">資料來自 Google 地圖</span></div>' +
+    '<div class="g-body"><p class="g-msg g-loading">正在載入 Google 評分…</p></div></section>';
+}
+
+function paintGoogle(it, html) {
+  const box = el.detail.querySelector(".g-box");
+  if (!box || box.dataset.id !== it.id) return;   // 已經換到別座停車場
+  box.querySelector(".g-body").innerHTML = html;
+  box.removeAttribute("aria-busy");
+  // 沒有真的被截斷的評論就不需要「更多」
+  requestAnimationFrame(() => {
+    for (const t of box.querySelectorAll(".g-text.clamp")) {
+      if (t.scrollHeight <= t.clientHeight + 2) {
+        t.classList.remove("clamp");
+        box.querySelector('.g-more[aria-controls="' + t.id + '"]')?.remove();
+      }
+    }
+  });
+}
+
+const gMsg = (text, href) => '<p class="g-msg">' + esc(text) + "</p>" + (href ? '<p class="g-foot">' + openLinkHTML(href) + "</p>" : "");
+
+function reviewsHTML(it, d) {
+  const href = d.uri || mapsSearchUrl(it, d.place_id);
+  let sum;
+  if (d.rating != null) {
+    sum = '<div class="g-sum"><span class="g-num" aria-hidden="true">' + fmtRating(d.rating) + "</span>" + starsHTML(d.rating) +
+      '<span class="g-count" aria-hidden="true">' + d.count.toLocaleString("zh-TW") + " 則評論</span>" +
+      '<span class="visually-hidden">Google 評分：5 分中的 ' + fmtRating(d.rating) + " 分，共 " + d.count + " 則評論</span></div>";
+  } else {
+    sum = '<p class="g-msg">Google 地圖上還沒有評分。</p>';
+  }
+  const revs = [...d.reviews].sort((a, b) => (b.time || 0) - (a.time || 0));
+  let list = "";
+  if (!revs.length) {
+    list = '<p class="g-msg">目前沒有評論。</p>';
+  } else {
+    list = '<ol class="g-reviews">' + revs.map((r, i) => {
+      const long = r.text.length > 60;     // 先截成 4 行，畫完再量，沒被截斷就拿掉「更多」
+      const name = r.authorUri
+        ? '<a class="g-author" href="' + esc(r.authorUri) + '" target="_blank" rel="noopener">' + esc(r.author) + "</a>"
+        : '<span class="g-author">' + esc(r.author) + "</span>";
+      const av = r.photo
+        ? '<img class="g-av" src="' + esc(r.photo) + '" alt="" width="36" height="36" loading="lazy" decoding="async" referrerpolicy="no-referrer">'
+        : '<span class="g-av g-av-empty" aria-hidden="true">' + esc(r.author.slice(0, 1)) + "</span>";
+      const links = [
+        r.uri ? '<a href="' + esc(r.uri) + '" target="_blank" rel="noopener">在 Google 地圖查看這則評論</a>' : "",
+        r.flag ? '<a href="' + esc(r.flag) + '" target="_blank" rel="noopener">檢舉</a>' : "",
+      ].filter(Boolean).join(SEP);
+      return '<li class="g-rv"' + (i >= RV_SHOW ? " hidden" : "") + ">" +
+        '<div class="g-rv-head">' + av + '<div class="g-rv-who">' + name +
+          '<div class="g-rv-meta">' + (r.rating != null ? starsHTML(r.rating, " sm") + '<span class="visually-hidden">' + r.rating + " 顆星，</span>" : "") +
+          "<span>" + esc(r.when) + "</span></div></div></div>" +
+        (r.text ? '<p class="g-text' + (long ? " clamp" : "") + '" id="gt-' + i + '">' + esc(r.text) + "</p>" : "") +
+        (long ? '<button type="button" class="linkbtn g-more" aria-expanded="false" aria-controls="gt-' + i + '">更多</button>' : "") +
+        (links ? '<p class="g-rv-links">' + links + "</p>" : "") +
+      "</li>";
+    }).join("") + "</ol>" +
+    (revs.length > RV_SHOW ? '<button type="button" class="textbtn g-all">顯示其他 ' + (revs.length - RV_SHOW) + " 則評論</button>" : "");
+  }
+  return sum + list + '<p class="g-foot">' + openLinkHTML(href) + "</p>";
+}
+
+function googleErrText(e) {
+  const s = String((e && e.code) || "") + " " + String((e && e.message) || "");
+  if (/OVER_QUERY_LIMIT|RESOURCE_EXHAUSTED|quota|429/i.test(s)) return "Google 服務的用量已達上限，暫時無法顯示評分與評論。";
+  if (/REQUEST_DENIED|PERMISSION_DENIED|denied|403|not.?(enabled|activated|authorized)|billing|referer/i.test(s)) {
+    GR.broken = "Google 地點服務目前沒有開放給這個網站使用，暫時無法顯示評分與評論。";
+    return GR.broken;
+  }
+  return "暫時無法載入 Google 評分與評論，請稍後再試。";
+}
+
+/** 打開詳情時呼叫：有快取就不連網；沒有 place_id 才用 Text Search（只要 id） */
+async function loadGoogle(it) {
+  const search = mapsSearchUrl(it, lotPlaceId(it));
+  let pid = lotPlaceId(it) || cachedPid(it.id);
+  if (pid && pid !== PID_NONE) {
+    const c = cachedReviews(pid);
+    if (c) { paintGoogle(it, reviewsHTML(it, c)); return; }
+  }
+  if (!API_KEY) { paintGoogle(it, gMsg("這個網站沒有設定 Google 地圖金鑰，無法顯示評分與評論。", search)); return; }
+  if (pid === PID_NONE) { paintGoogle(it, gMsg("在 Google 地圖上找不到對應地點。", search)); return; }
+  if (GR.broken) { paintGoogle(it, gMsg(GR.broken, pid ? mapsSearchUrl(it, pid) : search)); return; }
+  if (GR.inflight.has(it.id)) return;   // 同一座正在載入，回來時會畫到目前的區塊
+
+  GR.inflight.add(it.id);
+  try {
+    const ok = G.ready ? await G.ready : false;
+    if (!ok || G.failed) { paintGoogle(it, gMsg("Google 地圖目前無法載入，暫時無法顯示評分與評論。", search)); return; }
+    const { Place } = await google.maps.importLibrary("places");
+    if (!pid) {
+      // Text Search Essentials（IDs Only）：fields 只能有 id，否則會升級成較貴的 SKU
+      const precise = hasGeo(it) && it.precision !== "DISTRICT";
+      const { places } = await Place.searchByText({
+        textQuery: [it.name, it.address || it.location].filter(Boolean).join(" "),
+        fields: ["id"],
+        locationBias: precise ? { center: { lat: it.lat, lng: it.lng }, radius: 800 }
+          : hasGeo(it) ? { center: { lat: it.lat, lng: it.lng }, radius: 5000 } : PLACES_BIAS,
+        language: "zh-TW",
+        region: "tw",
+        maxResultCount: 1,
+      });
+      pid = (places && places[0] && places[0].id) || null;
+      store.set(LS.pid + it.id, { id: pid || PID_NONE, at: Date.now() });
+      if (!pid) { paintGoogle(it, gMsg("在 Google 地圖上找不到對應地點。", search)); return; }
+      const c = cachedReviews(pid);
+      if (c) { paintGoogle(it, reviewsHTML(it, c)); return; }
+    }
+    if (dailyCount() >= RV_DAILY_CAP) {
+      paintGoogle(it, gMsg("今天在這台裝置上已載入很多次 Google 評論，為了節省共用額度先暫停，請直接到 Google 地圖查看。", mapsSearchUrl(it, pid)));
+      return;
+    }
+    // Place Details：reviews 屬於 Enterprise + Atmosphere，只要這四個欄位
+    const place = new Place({ id: pid });
+    await place.fetchFields({ fields: ["rating", "userRatingCount", "reviews", "googleMapsURI"] });
+    bumpDaily();
+    const data = serializePlace(place, pid);
+    store.set(LS.rv + pid, data);
+    paintGoogle(it, reviewsHTML(it, data));
+  } catch (e) {
+    console.warn("Google 評分與評論載入失敗", e);
+    paintGoogle(it, gMsg(googleErrText(e), pid && pid !== PID_NONE ? mapsSearchUrl(it, pid) : search));
+  } finally {
+    GR.inflight.delete(it.id);
+  }
+}
+
+el.detail.addEventListener("click", (e) => {
+  const more = e.target.closest(".g-more");
+  if (more) {
+    const p = $(more.getAttribute("aria-controls"));
+    const open = more.getAttribute("aria-expanded") !== "true";
+    p.classList.toggle("clamp", !open);
+    more.setAttribute("aria-expanded", String(open));
+    more.textContent = open ? "收合" : "更多";
+    return;
+  }
+  const all = e.target.closest(".g-all");
+  if (all) {
+    const hidden = [...el.detail.querySelectorAll(".g-rv[hidden]")];
+    hidden.forEach((li) => { li.hidden = false; });
+    all.remove();
+    const first = hidden[0] && hidden[0].querySelector("a, button");
+    if (first) focusNoScroll(first);
+  }
+});
 
 /* =====================================================================
  * 起點（離我最近／地點搜尋）
@@ -942,11 +1337,8 @@ function setOrigin(lat, lng, label) {
   el.sheetBody.scrollTop = 0;
   if (isSheet() && ui.snap === "peek") setSnap("mid");
   queueLayout();
-  requestAnimationFrame(() => {
-    const pts = state.filtered.filter((i) => i._d != null).slice(0, 8).map((i) => ({ lat: i.lat, lng: i.lng }));
-    pts.push({ lat, lng });
-    fitPoints(pts);
-  });
+  // 鍵盤收起、起點標籤出現後再移鏡頭，padding 才會是對的
+  whenSettled(() => focusArea({ lat, lng }, nearbyLots(lat, lng)));
 }
 
 function clearOrigin() {
@@ -1027,36 +1419,58 @@ async function geocodePlace(q) {
   return nominatim(q);
 }
 
+/** 自動完成的某一筆建議 → 座標。這一步用 Place.fetchFields 結束 session，只要 Essentials 欄位 */
+async function placeFromPrediction(p) {
+  const place = p.pred.toPlace();   // 會帶著同一個 session token
+  await place.fetchFields({ fields: ["location", "displayName", "formattedAddress"] });
+  const loc = place.location;
+  return loc ? { lat: loc.lat(), lng: loc.lng(), label: place.displayName || p.main } : null;
+}
+
 let placeBusy = false;
-async function searchPlace(text) {
+/**
+ * 把一段文字當成地點，設為起點。
+ * pred：使用者在建議清單點選的 Google 地點。沒有的話，若目前 session 已有這段文字的建議就用第一筆；
+ * 否則走原本的 Places 文字搜尋 → Geocoding → Nominatim。
+ */
+async function searchPlace(text, { pred = null } = {}) {
   const q = text.trim();
   if (!q || placeBusy) return;
   placeBusy = true;
   el.placeSearchBtn.disabled = true;
-  el.placeHintText.textContent = "正在搜尋「" + q + "」…";
+  el.placeHintText.textContent = "正在搜尋「" + (pred ? pred.main : q) + "」…";
+  const p = pred || (sg.token && sg.placesQ === q && sg.places[0]) || null;
   try {
-    const r = await geocodePlace(q);
+    let r = null;
+    if (p) {
+      try { r = await placeFromPrediction(p); }
+      catch (e) { console.warn("無法取得 Google 地點座標，改用其他方式", e); }
+    }
+    if (!r) r = await geocodePlace(p ? [p.main, p.sub].filter(Boolean).join(" ") : q);
     if (!r) { toast("找不到「" + q + "」這個地點"); return; }
+    const label = r.label || (p ? p.main : q);
     state.query = "";
     el.q.value = "";
     el.clearQ.hidden = true;
     if (isSheet()) el.q.blur();
-    setOrigin(r.lat, r.lng, q);
-    toast("已定位到「" + q + "」，依距離排序");
+    setOrigin(r.lat, r.lng, label);
+    toast("已定位到「" + label + "」，依距離排序");
   } catch (e) {
     console.error(e);
     toast("地點搜尋服務暫時無法使用");
   } finally {
+    endSession();            // 不論成功與否，這次輸入工作階段都結束了
     placeBusy = false;
     el.placeSearchBtn.disabled = false;
     updatePlaceHint();
+    syncHistory();
   }
 }
 
 function updatePlaceHint() {
   if (placeBusy) return;
   const q = state.query.trim();
-  const show = q.length >= 2;
+  const show = q.length >= 2 && !sg.open;   // 建議清單開著時，最後一列就是同一個動作
   el.placeSearchBtn.hidden = !show;
   if (show) {
     el.placeHintText.innerHTML = "以「<strong>" + esc(q) + "</strong>」為地點搜尋附近";
@@ -1064,36 +1478,313 @@ function updatePlaceHint() {
 }
 
 /* =====================================================================
+ * 搜尋建議：停車場（本站資料，免費）＋地點（Google Places 自動完成）
+ * combobox / listbox：焦點留在輸入框，用 aria-activedescendant 標示目前選項
+ * ===================================================================== */
+const mapsUsable = () => !!(API_KEY && G.map && !G.failed);
+const sameName = (a, b) => norm(a).replace(/[\s()（）]/g, "") === norm(b).replace(/[\s()（）]/g, "");
+
+/** 結束這次自動完成工作階段：丟掉 token、取消進行中的請求 */
+function endSession() {
+  clearTimeout(sg.timer);
+  sg.seq++;
+  sg.token = null;
+  sg.places = [];
+  sg.placesQ = "";
+}
+
+/** 和 applyFilters 同一套正規化，並尊重目前的行政區／進出場方式篩選 */
+function lotSuggestions(text) {
+  const q = norm(text.trim());
+  if (!q) return [];
+  const out = [];
+  for (const it of state.items) {
+    if (state.district && it.district !== state.district) continue;
+    if (state.access.size && !state.access.has(it.access)) continue;
+    const n = norm(it.name);
+    const rank = n.startsWith(q) ? 0 : n.includes(q) ? 1
+      : norm([it.address, it.location, it.district].join(" ")).includes(q) ? 2 : -1;
+    if (rank < 0) continue;
+    const d = state.origin && hasGeo(it) ? haversine(state.origin.lat, state.origin.lng, it.lat, it.lng) : null;
+    out.push({ it, rank, d });
+  }
+  out.sort((a, b) => a.rank - b.rank || (a.d ?? 1e9) - (b.d ?? 1e9) || a.it.name.length - b.it.name.length);
+  return out.slice(0, SUGG_LOTS);
+}
+
+function buildRows() {
+  const q = el.q.value.trim();
+  const rows = lotSuggestions(q).map(({ it, d }) => ({ kind: "lot", key: "lot:" + it.id, it, d }));
+  // 地點：等 debounce 回來前，先保留上一批結果，避免每打一個字整組閃一下
+  if (q.length >= SUGG_MIN && sg.places.length) {
+    let n = 0;
+    for (const p of sg.places) {
+      if (n >= SUGG_PLACES) break;
+      if (rows.some((r) => r.kind === "lot" && sameName(r.it.name, p.main))) continue;   // 和停車場同名就不重複列
+      rows.push({ kind: "place", key: "pl:" + (p.id || p.main), p });
+      n++;
+    }
+  }
+  if (q.length >= SUGG_MIN) rows.push({ kind: "fallback", key: "fb", q });
+  return rows;
+}
+
+function hl(name, q) {
+  const nq = norm(q.trim()), nn = norm(name);
+  const i = nq && nn.length === name.length ? nn.indexOf(nq) : -1;
+  if (i < 0) return esc(name);
+  return esc(name.slice(0, i)) + "<mark>" + esc(name.slice(i, i + nq.length)) + "</mark>" + esc(name.slice(i + nq.length));
+}
+
+const ICON_PIN = '<svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="10" r="2.3" fill="currentColor"/></svg>';
+const ICON_SEARCH = '<svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="m15.5 15.5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+
+function optionHTML(r, i, q) {
+  const head = '<div class="sg-opt" role="option" id="sgo-' + i + '" data-i="' + i + '" aria-selected="false">';
+  if (r.kind === "lot") {
+    const sub = [r.d != null ? fmtDist(r.d) : "", r.it.district, r.it.location || r.it.address].filter(Boolean).map(esc).join("・");
+    return head + '<span class="sg-ico lot" aria-hidden="true">P</span><span class="sg-txt"><span class="sg-main">' +
+      hl(r.it.name, q) + '</span><span class="sg-sub">' + sub + "</span></span></div>";
+  }
+  if (r.kind === "place") {
+    return head + '<span class="sg-ico">' + ICON_PIN + '</span><span class="sg-txt"><span class="sg-main">' +
+      hl(r.p.main, q) + "</span>" + (r.p.sub ? '<span class="sg-sub">' + esc(r.p.sub) + "</span>" : "") + "</span></div>";
+  }
+  return head + '<span class="sg-ico">' + ICON_SEARCH + '</span><span class="sg-txt"><span class="sg-main">以「<strong>' +
+    esc(r.q) + '</strong>」搜尋這個地點</span><span class="sg-sub">找這附近的停車場，依距離排序</span></span></div>';
+}
+
+function renderSugg() {
+  const q = el.q.value;
+  const rows = sg.rows = buildRows();
+  if (!rows.length) { closeSugg(); return; }
+  sg.active = rows.findIndex((r) => r.key === sg.activeKey);
+  if (sg.active < 0) sg.activeKey = null;
+  const groups = [["lot", "停車場"], ["place", "地點"], ["fallback", ""]];
+  let html = "";
+  for (const [kind, label] of groups) {
+    const idx = rows.map((r, i) => (r.kind === kind ? i : -1)).filter((i) => i >= 0);
+    if (!idx.length) continue;
+    html += '<div class="sg-group" role="group" ' + (label ? 'aria-labelledby="sgl-' + kind + '"' : 'aria-label="其他搜尋方式"') + ">" +
+      (label ? '<div class="sg-label" id="sgl-' + kind + '" role="presentation">' + label + "</div>" : "") +
+      idx.map((i) => optionHTML(rows[i], i, q)).join("") + "</div>";
+  }
+  el.suggList.innerHTML = html;
+  el.suggFoot.hidden = !rows.some((r) => r.kind === "place");
+  paintActive();
+  if (!sg.open) {
+    sg.open = true;
+    el.sugg.hidden = false;
+    el.q.setAttribute("aria-expanded", "true");
+    updatePlaceHint();
+    syncHistory();
+  }
+  const nl = rows.filter((r) => r.kind === "lot").length, np = rows.filter((r) => r.kind === "place").length;
+  clearTimeout(renderSugg._t);
+  renderSugg._t = setTimeout(() => {
+    el.suggStatus.textContent = sg.open ? nl + " 座停車場" + (np ? "、" + np + " 個地點" : "") + "建議" : "";
+  }, 500);
+}
+
+function paintActive() {
+  for (const o of el.suggList.querySelectorAll('[aria-selected="true"]')) o.setAttribute("aria-selected", "false");
+  const node = sg.active >= 0 ? $("sgo-" + sg.active) : null;
+  if (node) {
+    node.setAttribute("aria-selected", "true");
+    el.q.setAttribute("aria-activedescendant", node.id);
+    node.scrollIntoView({ block: "nearest" });
+  } else {
+    el.q.removeAttribute("aria-activedescendant");
+  }
+}
+
+function moveActive(dir) {
+  const n = sg.rows.length;
+  if (!n) return;
+  let i = sg.active + dir;
+  if (i >= n) i = 0;
+  if (i < -1) i = n - 1;
+  sg.active = i;
+  sg.activeKey = i >= 0 ? sg.rows[i].key : null;
+  paintActive();
+}
+
+function closeSugg({ abandon = false, history: syncHist = true } = {}) {
+  clearTimeout(sg.timer);
+  if (abandon) endSession();
+  sg.active = -1; sg.activeKey = null;
+  if (!sg.open) return;
+  sg.open = false;
+  el.sugg.hidden = true;
+  el.suggList.replaceChildren();
+  el.q.setAttribute("aria-expanded", "false");
+  el.q.removeAttribute("aria-activedescendant");
+  el.suggStatus.textContent = "";
+  updatePlaceHint();
+  if (syncHist) syncHistory();
+}
+
+/** 輸入框內容變了：停車場建議立刻更新；Google 地點等 debounce，且選字（composition）中不送出 */
+function onSuggInput(e) {
+  if (!el.q.value.trim()) { endSession(); closeSugg(); return; }
+  sg.activeKey = null;
+  const composing = sg.composing || (e && e.isComposing);
+  refreshSugg({ fetch: !composing });
+}
+
+function refreshSugg({ fetch = true } = {}) {
+  if (document.activeElement !== el.q && !sg.open) return;
+  if (!el.q.value.trim()) { closeSugg(); return; }
+  renderSugg();
+  if (fetch) schedulePlaces();
+}
+
+function schedulePlaces() {
+  clearTimeout(sg.timer);
+  sg.seq++;                         // 進行中的請求作廢（回來時忽略）
+  const q = el.q.value.trim();
+  if (sg.composing || q.length < SUGG_MIN || sg.broken || !mapsUsable()) {
+    if (q.length < SUGG_MIN && sg.places.length) { sg.places = []; sg.placesQ = ""; if (sg.open) renderSugg(); }
+    return;
+  }
+  if (q === sg.placesQ) return;     // 同一段文字已經有結果
+  const seq = sg.seq;
+  sg.timer = setTimeout(() => fetchPlaces(q, seq), SUGG_DEBOUNCE);
+}
+
+async function fetchPlaces(q, seq) {
+  try {
+    const lib = await google.maps.importLibrary("places");
+    if (seq !== sg.seq) return;
+    if (!sg.token) sg.token = new lib.AutocompleteSessionToken();   // 新的工作階段才建立新 token
+    const { suggestions } = await lib.AutocompleteSuggestion.fetchAutocompleteSuggestions({
+      input: q,
+      sessionToken: sg.token,
+      locationBias: PLACES_BIAS,
+      includedRegionCodes: ["tw"],
+      language: "zh-TW",
+      region: "tw",
+    });
+    if (seq !== sg.seq || el.q.value.trim() !== q) return;
+    sg.places = (suggestions || []).map((s) => s.placePrediction).filter(Boolean).map((pp) => ({
+      id: pp.placeId,
+      main: (pp.mainText && pp.mainText.text) || (pp.text && pp.text.text) || "",
+      sub: (pp.secondaryText && pp.secondaryText.text) || "",
+      pred: pp,
+    })).filter((p) => p.main);
+    sg.placesQ = q;
+    if (sg.open) renderSugg();
+  } catch (err) {
+    if (seq !== sg.seq) return;
+    console.warn("Google 地點建議無法使用，只顯示停車場建議", err);
+    const msg = String((err && (err.code || "")) + " " + (err && err.message || ""));
+    if (/denied|permission|not.?(enabled|activated|authorized)|billing|403|referer/i.test(msg)) sg.broken = true;
+    sg.places = []; sg.placesQ = q;
+    if (sg.open) renderSugg();
+  }
+}
+
+function selectRow(i) {
+  const r = sg.rows[i];
+  if (!r) return;
+  if (r.kind === "lot") pickLot(r.it);
+  else if (r.kind === "place") { closeSugg(); searchPlace(r.p.main, { pred: r.p }); }
+  else { closeSugg(); searchPlace(r.q); }
+}
+
+/** 選停車場：清掉搜尋文字（清單維持完整），打開詳情並放大到該處 */
+function pickLot(it) {
+  const kbWasOpen = geo.kb > 0;
+  endSession();                       // 沒用到 Google 地點，這次 session 就此結束
+  closeSugg({ history: false });
+  clearTimeout(debounce);
+  el.q.value = ""; state.query = ""; el.clearQ.hidden = true;
+  applyFilters();
+  openDetail(it.id);                  // 焦點移到詳情標題 → 手機鍵盤收起；openDetail 會同步歷史紀錄
+  if (kbWasOpen) whenSettled(() => panToItem(it, false));   // 鍵盤收起後面板高度變了，再對準一次
+}
+
+// 點選建議：pointerdown 時不要讓輸入框失焦（鍵盤不會先收起，click 一定收得到）
+el.sugg.addEventListener("pointerdown", (e) => { if (e.target.closest(".sg-opt")) e.preventDefault(); });
+el.sugg.addEventListener("mousedown", (e) => e.preventDefault());
+el.sugg.addEventListener("click", (e) => {
+  const o = e.target.closest(".sg-opt");
+  if (o) selectRow(Number(o.dataset.i));
+});
+el.sugg.addEventListener("pointermove", (e) => {
+  if (e.pointerType !== "mouse") return;
+  const o = e.target.closest(".sg-opt");
+  if (!o || Number(o.dataset.i) === sg.active) return;
+  sg.active = Number(o.dataset.i);
+  sg.activeKey = sg.rows[sg.active] ? sg.rows[sg.active].key : null;
+  paintActive();
+});
+// 點建議清單和搜尋列以外的地方就關起來
+document.addEventListener("pointerdown", (e) => {
+  if (sg.open && !el.searchForm.contains(e.target)) closeSugg({ abandon: true });
+}, true);
+
+/* =====================================================================
  * 事件
  * ===================================================================== */
 let debounce;
-el.q.addEventListener("input", () => {
+el.q.addEventListener("input", (e) => {
   state.query = el.q.value;
   el.clearQ.hidden = !el.q.value;
   if (ui.view === "detail") closeDetail({ focus: false });
   else if (ui.view === "filters") closeFilters({ focus: false });
   clearTimeout(debounce);
   debounce = setTimeout(applyFilters, 150);
+  onSuggInput(e);
+});
+el.q.addEventListener("compositionstart", () => { sg.composing = true; });
+el.q.addEventListener("compositionend", () => { sg.composing = false; refreshSugg(); });
+el.q.addEventListener("focus", () => { if (el.q.value.trim()) refreshSugg({ fetch: false }); });
+el.q.addEventListener("blur", () => {
+  // 延後一點：點選建議時（pointerdown 已 preventDefault，通常不會 blur）仍要讓 click 先處理
+  setTimeout(() => {
+    if (sg.open && document.activeElement !== el.q && !el.sugg.contains(document.activeElement)) closeSugg({ abandon: true });
+  }, 180);
 });
 el.q.addEventListener("keydown", (e) => {
-  if (e.key !== "Enter") return;
-  // 注音／倉頡等輸入法選字時按 Enter 只是確認候選字，不能當成送出（先檢查，再 preventDefault）
+  if (e.key !== "Enter" && e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Escape") return;
+  // 注音／倉頡等輸入法選字時，Enter／方向鍵／Esc 都是給輸入法用的：先檢查，再 preventDefault
   if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    if (!sg.open) {
+      if (el.q.value.trim()) { e.preventDefault(); refreshSugg({ fetch: false }); }
+      return;
+    }
+    e.preventDefault();
+    moveActive(e.key === "ArrowDown" ? 1 : -1);
+    return;
+  }
+  if (e.key === "Escape") {
+    if (sg.open) { e.preventDefault(); closeSugg({ abandon: true }); }
+    return;   // 沒有建議清單時，讓 type=search 自己清除文字（原本的行為）
+  }
   e.preventDefault();
+  if (sg.open && sg.active >= 0) { selectRow(sg.active); return; }
+  if (sg.open) closeSugg({ history: false });
   clearTimeout(debounce);
   state.query = el.q.value;
   applyFilters();
+  // 沒有符合的停車場：把文字當地點（session 開著就用第一筆 Google 建議）
   if (state.query.trim() && !state.filtered.length) { searchPlace(state.query); return; }
+  endSession();                                    // 只是看清單結果：這次自動完成 session 放棄
   if (isSheet()) {
     el.q.blur();                                   // 手機上收起鍵盤，讓結果露出來
-    if (ui.snap === "peek" && state.query.trim()) setSnap("mid");
+    if (ui.snap === "peek" && state.query.trim()) setSnap("mid", { history: false });
   }
+  syncHistory();
   if (state.query.trim()) fitToResults();
 });
 el.searchForm.addEventListener("submit", (e) => e.preventDefault());
 el.clearQ.addEventListener("click", () => {
   el.q.value = ""; state.query = ""; el.clearQ.hidden = true;
-  clearTimeout(debounce); applyFilters(); el.q.focus();
+  clearTimeout(debounce); applyFilters();
+  endSession(); closeSugg();
+  el.q.focus();
 });
 el.placeSearchBtn.addEventListener("click", () => searchPlace(state.query));
 el.btnNear.addEventListener("click", locateMe);
