@@ -2,121 +2,156 @@
 <html lang="zh-Hant-TW">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="text-scale" content="scale">
 <meta name="color-scheme" content="light dark">
 <script>
   // 只做一件事：在第一次繪製前套用使用者選的外觀，避免閃爍。
   try { document.querySelector('meta[name="color-scheme"]').content = localStorage.getItem("color-scheme") || "light dark"; } catch (e) {}
 </script>
-<meta name="theme-color" content="#0d5a8a" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#121a22" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f4f6f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14171c" media="(prefers-color-scheme: dark)">
 <title>臺中市身障免銷單停車場地圖</title>
-<meta name="description" content="臺中市身心障礙者免銷單服務已上線停車場，可依名稱、地點、進出場方式搜尋，並顯示離您最近的停車場。資料每日自動更新。">
+<meta name="description" content="臺中市身心障礙者免銷單服務已上線停車場，可依名稱、地點、進出場方式搜尋，顯示離您最近的停車場與即時車位燈號。資料每日自動更新。">
 <link rel="preconnect" href="https://maps.googleapis.com">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="preconnect" href="https://motoretag.taichung.gov.tw" crossorigin>
 <link rel="stylesheet" href="./app.css">
 </head>
 <body>
 <a class="skip" href="#list">跳到停車場清單</a>
 
-<div class="app">
-  <header class="top">
-    <h1><span class="logo" aria-hidden="true">♿</span>臺中市身障免銷單停車場地圖</h1>
-    <p class="meta">
-      <span id="metaCount">載入中…</span>
-      <span aria-hidden="true">·</span>
-      <a href="https://tcparking.taichung.gov.tw/ParkWeb/Pages/PublicService/LoveCardSchedule" target="_blank" rel="noopener">資料來源：臺中市停車資訊網</a>
-    </p>
-  </header>
-
-  <div class="controls">
-    <form class="searchrow" role="search" id="searchForm" action="#">
-      <div class="searchbox">
+<main class="app" id="main">
+  <div class="panel" id="panel">
+    <!-- 搜尋列：手機上浮在地圖頂端；桌機在左側面板頂端 -->
+    <div class="searchbar" id="searchbar">
+      <h1 class="brand">臺中市身障免銷單停車場地圖</h1>
+      <form class="pill" role="search" id="searchForm" action="#">
+        <svg class="pill-ico" aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="m15.5 15.5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         <label class="visually-hidden" for="q">搜尋停車場名稱、路名、行政區，或輸入地點</label>
-        <svg class="ico" aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="m15.5 15.5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        <input id="q" type="search" autocomplete="off" enterkeyhint="search"
-               placeholder="停車場名稱、路名，或地點（例：臺中車站）">
-        <button class="clear" id="clearQ" type="button" aria-label="清除搜尋" hidden>
+        <input id="q" type="search" inputmode="search" enterkeyhint="search" autocomplete="off"
+               autocapitalize="off" spellcheck="false" placeholder="搜尋停車場或地點">
+        <button class="iconbtn clear" id="clearQ" type="button" aria-label="清除搜尋" hidden>
           <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
         </button>
-      </div>
-      <button class="btn primary" id="btnNear" type="button"><span aria-hidden="true">📍</span> <span class="lbl">離我最近</span></button>
-    </form>
+        <span class="pill-sep" aria-hidden="true"></span>
+        <button class="iconbtn" id="btnFilter" type="button" aria-controls="sheet" aria-expanded="false">
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22"><path d="M4 7h9M17 7h3M4 17h3M11 17h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="15" cy="7" r="2.2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="9" cy="17" r="2.2" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+          <span class="visually-hidden">篩選與設定</span>
+          <span class="badge" id="filterBadge" hidden></span>
+        </button>
+      </form>
 
-    <div class="placehint" id="placeHint" hidden>
-      <span id="placeHintText"></span>
-      <button type="button" class="btn small" id="placeSearchBtn">搜尋這個地點附近的停車場</button>
+      <button type="button" class="suggest" id="placeSearchBtn" hidden>
+        <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="10" r="2.3" fill="currentColor"/></svg>
+        <span id="placeHintText"></span>
+      </button>
+
+      <div class="originchip" id="originBar" hidden>
+        <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="4" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2" opacity=".45"/></svg>
+        <span class="originchip-text"><strong id="originName"></strong> 附近・依距離排序</span>
+        <button type="button" class="iconbtn small" id="clearOrigin" aria-label="取消地點，恢復原本排序">
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+        </button>
+      </div>
     </div>
 
-    <div class="originbar" id="originBar" hidden>
-      <span><span aria-hidden="true">📍</span> 以 <strong id="originName"></strong> 為中心，依距離排序</span>
-      <button type="button" class="linkbtn" id="clearOrigin">取消<span class="visually-hidden">地點排序</span></button>
-    </div>
+    <button class="fab" id="btnNear" type="button" aria-label="離我最近" title="離我最近">
+      <svg class="fab-ico" aria-hidden="true" viewBox="0 0 24 24" width="24" height="24"><circle cx="12" cy="12" r="3.2" fill="currentColor"/><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span class="fab-lbl">離我最近</span>
+    </button>
 
-    <div class="filterrow">
-      <div class="field">
-        <label for="fDistrict">行政區</label>
-        <select id="fDistrict"><option value="">全部</option></select>
-      </div>
-      <div class="field">
-        <label for="fSort">排序</label>
-        <select id="fSort">
-          <option value="default">預設（公告順序）</option>
-          <option value="distance">距離由近到遠</option>
-          <option value="name">名稱</option>
-        </select>
-      </div>
-      <details class="accessfilter" id="accessFilter">
-        <summary>進出場方式<span class="count" id="accessCount"></span></summary>
-        <div class="chips" id="accessChips" role="group" aria-label="依進出場方式篩選（可複選）"></div>
-      </details>
-    </div>
-  </div>
+    <!-- 底部面板（手機）／側邊面板（桌機）：清單、單一停車場詳情、篩選與設定 -->
+    <section class="sheet" id="sheet" aria-label="停車場清單" data-view="list" data-snap="peek">
+      <div class="sheet-head" id="sheetHead">
+        <button class="grab" id="grab" type="button" aria-controls="sheet">
+          <span class="grab-bar" aria-hidden="true"></span>
+          <span class="visually-hidden" id="grabLabel">展開清單</span>
+        </button>
 
-  <div class="tabbar" id="tabbar" aria-label="切換清單或地圖">
-    <button class="tab" id="tabList" type="button" aria-controls="listpane"><span aria-hidden="true">📋</span> 清單</button>
-    <button class="tab" id="tabMap" type="button" aria-controls="mappane"><span aria-hidden="true">🗺️</span> 地圖</button>
-  </div>
+        <div class="head head-list">
+          <div class="head-text">
+            <h2 class="head-title" id="listTitle"><span id="resultCount">載入中…</span></h2>
+            <p class="head-sub" id="listSub"></p>
+          </div>
+          <button type="button" class="textbtn" id="resetFilters" hidden>清除篩選</button>
+        </div>
 
-  <main id="main">
-    <section class="listpane" id="listpane" aria-labelledby="listTitle">
-      <div class="listhead">
-        <h2 id="listTitle" class="visually-hidden">停車場清單</h2>
-        <span id="resultCount" aria-live="polite">—</span>
-        <span id="geoNote"></span>
-      </div>
-      <ul id="list" tabindex="-1"></ul>
-    </section>
-    <section class="mappane" id="mappane" aria-label="地圖">
-      <div id="map"></div>
-      <div class="mapmsg" id="mapMsg" hidden></div>
-    </section>
-  </main>
+        <div class="head head-detail" hidden>
+          <button type="button" class="iconbtn" id="detailBack" aria-label="返回清單">
+            <svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22"><path d="M15 5 8 12l7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <h2 class="head-title" id="dName" tabindex="-1"></h2>
+        </div>
 
-  <footer class="foot">
-    <span id="footMeta">資料每日自動更新。</span>
-    <details class="about">
-      <summary>關於本站與免責</summary>
-      <div class="aboutbody">
-        <p id="footDates"></p>
-        <p>資料來源：<a href="https://tcparking.taichung.gov.tw/ParkWeb/Pages/PublicService/LoveCardSchedule" target="_blank" rel="noopener">臺中市停車資訊網 — 身障免銷單服務已上線停車場</a>。地圖：Google 地圖。</p>
-        <p>座標由地理編碼推估，實際位置請以現場標示為準；免銷單服務內容與適用對象，一律以臺中市政府交通局公告為準。
-        <strong>本站為民間製作的資料整理工具，非官方網站。</strong></p>
-        <div class="field">
-          <label for="themeSel">外觀</label>
-          <select id="themeSel">
-            <option value="light dark" id="themeSystemOpt">跟隨系統</option>
-            <option value="light">淺色</option>
-            <option value="dark">深色</option>
-          </select>
+        <div class="head head-filters" hidden>
+          <h2 class="head-title" id="filtersTitle" tabindex="-1">篩選與設定</h2>
+          <button type="button" class="btn tonal" id="filtersDone">完成</button>
         </div>
       </div>
-    </details>
-  </footer>
-</div>
+
+      <div class="sheet-body" id="sheetBody">
+        <div class="view view-list">
+          <ul id="list" tabindex="-1" aria-labelledby="listTitle"></ul>
+          <p class="listfoot" id="listFoot">
+            資料來源：<a href="https://tcparking.taichung.gov.tw/ParkWeb/Pages/PublicService/LoveCardSchedule" target="_blank" rel="noopener">臺中市停車資訊網</a>・民間製作，非官方網站・<button type="button" class="linkbtn" id="aboutLink">關於本站</button>
+          </p>
+        </div>
+
+        <div class="view view-detail" id="detail" hidden></div>
+
+        <div class="view view-filters" hidden>
+          <fieldset class="fgroup">
+            <legend>排序</legend>
+            <div class="seg" id="sortSeg">
+              <label><input type="radio" name="sort" value="default" checked><span>公告順序</span></label>
+              <label><input type="radio" name="sort" value="distance"><span>距離</span></label>
+              <label><input type="radio" name="sort" value="name"><span>名稱</span></label>
+            </div>
+            <p class="fhint" id="sortHint">要依距離排序，請先按「離我最近」或搜尋一個地點。</p>
+          </fieldset>
+
+          <div class="fgroup">
+            <label class="flabel" for="fDistrict">行政區</label>
+            <div class="selectwrap"><select id="fDistrict"><option value="">全部行政區</option></select></div>
+          </div>
+
+          <fieldset class="fgroup">
+            <legend>進出場方式 <span class="fcount" id="accessCount"></span></legend>
+            <div class="chips" id="accessChips" role="group" aria-label="依進出場方式篩選（可複選）"></div>
+          </fieldset>
+
+          <fieldset class="fgroup">
+            <legend>外觀</legend>
+            <div class="seg" id="themeSeg">
+              <label><input type="radio" name="theme" value="light dark"><span id="themeSystemLbl">跟隨系統</span></label>
+              <label><input type="radio" name="theme" value="light"><span>淺色</span></label>
+              <label><input type="radio" name="theme" value="dark"><span>深色</span></label>
+            </div>
+          </fieldset>
+
+          <section class="fgroup about" id="about" aria-labelledby="aboutTitle" tabindex="-1">
+            <h3 id="aboutTitle">關於本站與免責</h3>
+            <p id="metaCount">載入中…</p>
+            <p id="footDates"></p>
+            <p>停車場名單：<a href="https://tcparking.taichung.gov.tw/ParkWeb/Pages/PublicService/LoveCardSchedule" target="_blank" rel="noopener">臺中市停車資訊網 — 身障免銷單服務已上線停車場</a>（每日 00:00 自動更新）。</p>
+            <p>即時車位燈號：<a href="https://motoretag.taichung.gov.tw/DataAPI/api/ParkingAPIV2/Opendata" target="_blank" rel="noopener">臺中市政府交通局「路外剩餘車位」開放資料</a>，約每分鐘更新。只提供「尚有車位／即將滿場／已滿」燈號，不是剩餘車位數；以名稱比對，部分停車場沒有即時資料。<span id="availNote"></span></p>
+            <p>地圖：Google 地圖。座標由地理編碼推估，實際位置請以現場標示為準；免銷單服務內容與適用對象，一律以臺中市政府交通局公告為準。</p>
+            <p><strong>本站為民間製作的資料整理工具，非官方網站。</strong></p>
+          </section>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <section class="mappane" id="mappane" aria-label="地圖">
+    <div id="map"></div>
+    <div class="mapmsg" id="mapMsg" hidden></div>
+  </section>
+</main>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
+<p class="visually-hidden" id="liveCount" role="status" aria-live="polite"></p>
 
 <script src="./config.js"></script>
 <script src="./app.js" type="module"></script>

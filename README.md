@@ -22,6 +22,7 @@
 | `.github/workflows/update-parking.yml` | 每日排程（**一定要放在 `.github/workflows/` 裡才會執行**） |
 | `parking/index.html` | 網站本體（入口） |
 | `parking/app.js`、`parking/app.css` | 前端程式與樣式（ES module，無建置步驟） |
+| `parking/availability.js` | 即時車位燈號：抓交通局開放資料、與本站停車場配對（不碰 DOM，可用 Node 測試） |
 | `parking/config.js` | **前端設定：Google 地圖瀏覽器金鑰與 Map ID** |
 | `parking/lib/` | 舊版 Leaflet 函式庫（目前已不使用，保留備查） |
 | `parking/scripts/` | 爬蟲與地理編碼程式 |
@@ -33,9 +34,11 @@
 - 🔍 關鍵字搜尋停車場名稱、路名、行政區
 - 📍 地點搜尋：輸入「臺中車站」「中國醫藥大學」等任意地點，找出附近停車場並依距離排序
 - 🧭 「離我最近」瀏覽器定位排序
-- 🏷 依行政區、免銷單進出場方式篩選
-- 🗺 Google 地圖標記自動分群，點選可看詳情、一鍵開 Google 導航
-- 📱 手機（清單／地圖分頁）與桌機（左右並排）、深色模式（可在「關於本站與免責」切換外觀）、鍵盤操作、Windows 高對比、減少動態效果皆支援
+- 🏷 依行政區、免銷單進出場方式篩選（收在搜尋列右側的「篩選與設定」）
+- 🚦 即時車位燈號（尚有車位／即將滿場／已滿），約每分鐘更新
+- 🗺 Google 地圖標記自動分群，點選後在面板顯示詳情、一鍵開 Google 導航
+- 📱 手機：全螢幕地圖＋浮動搜尋列＋可拖曳的底部面板（三段高度，Android 返回鍵會先收起面板）；
+  桌機：左側面板＋右側地圖。深色模式（在「篩選與設定」切換外觀）、鍵盤操作、Windows 高對比、減少動態效果皆支援
 
 ## 前端地圖：Google Maps
 
@@ -45,7 +48,8 @@
 - 標記：`AdvancedMarkerElement`（`marker` 程式庫）。進階標記一定要有 Map ID。
 - 分群：[`@googlemaps/markerclusterer`](https://github.com/googlemaps/js-markerclusterer) 2.6.2，
   從 jsDelivr 載入並鎖定版本與 SRI 雜湊；萬一載不到，地圖照常顯示，只是不分群。
-- 資訊視窗：`google.maps.InfoWindow`，含「在 Google 地圖導航」連結。
+- 詳情：點標記或卡片後顯示在面板裡（不再用 InfoWindow），含「導航」按鈕；
+  座標只推估到行政區的停車場，導航改用名稱＋地址搜尋，避免被帶到行政區中心。
 - 深淺色：依頁面目前的外觀建立地圖（`colorScheme: DARK / LIGHT`），切換外觀時會自動重建地圖。
 - 地點搜尋：有金鑰時先用 Places API（New）的文字搜尋，再試 Geocoding，
   都失敗或沒結果就退回 OpenStreetMap Nominatim（以臺中為優先範圍）。
@@ -76,6 +80,29 @@ window.GOOGLE_MAPS_MAP_ID  = "DEMO_MAP_ID"; // 進階標記需要；可換成自
 
 > ⚠️ 這把**瀏覽器金鑰**和下方 GitHub Actions secret 裡給 `geocode.py` 用的 `GOOGLE_MAPS_API_KEY`
 > 是兩回事。伺服器端那把只放在 Secrets、用 IP 限制或不設應用程式限制，**絕對不要**貼進 `config.js`。
+
+## 即時車位燈號
+
+來源：臺中市政府交通局「路外剩餘車位」開放資料
+`https://motoretag.taichung.gov.tw/DataAPI/api/ParkingAPIV2/Opendata`
+（免金鑰、`Access-Control-Allow-Origin: *`，瀏覽器直接抓；與 Google 地圖金鑰無關，沒有金鑰也照常運作）。
+
+- 只有燈號 `AvailableCarRGB`：`G` 尚有車位、`Y` 即將滿場、`R` 已滿、`B` 無即時資料（約六成都是 B），
+  外加總車位數 `TotalCar`。**沒有剩餘車位數字**，網頁也不會從顏色去推算。
+- 頁面可見時約每 60 秒抓一次（約 350 KB），切到背景就暫停；失敗時保留上一筆資料，超過 10 分鐘就不再顯示。
+- 配對（`availability.js` 的 `matchLots`）：官方 `Position` 是「行政區-管理單位-名稱P」，
+  在同一行政區內比對正規化後的名稱（臺／台、去括號、去「停車場／附屬／地下…」、A／B 區保留），
+  名稱必須唯一；地下、平面、立體不同的視為不同停車場。最後才用座標備援（45 公尺內唯一、且不能一對多）。
+  目前約 266／290 座配得到，其餘顯示「無即時車位資料」，寧可不顯示也不顯示錯的。
+- 想要**精確的剩餘車位數**：交通部 TDX 的 `Parking/OffStreet/ParkingAvailability/City/Taichung` 有數字、約每分鐘更新，
+  但需要 client id／secret（未授權會 401）且有流量限制，**secret 不能放在 GitHub Pages 前端**。
+  可行做法是另寫 GitHub Actions 定期把結果寫到 `parking/data/availability.json`，或架一個小型的授權代理；目前尚未實作。
+
+離線檢查配對結果（把 API 回應存成檔案後）：
+
+```bash
+node -e 'import("./parking/availability.js").then(m=>{const fs=require("fs");const r=m.matchLots(JSON.parse(fs.readFileSync("parking/data/parkings.json")).items,JSON.parse(fs.readFileSync("/tmp/opendata.json")));console.log(r.size)})'
+```
 
 ## 日常維護
 
@@ -122,10 +149,12 @@ cd parking && python -m http.server 8000  # 開 http://localhost:8000
 ```text
 本機快速檢查清單
 - 清單出現 290 筆、輸入「大里」會篩選、Enter 在注音選字時不會送出
-- 輸入「臺中車站」→「搜尋這個地點附近的停車場」→ 依距離排序並出現起點
+- 輸入「臺中車站」→ 點搜尋列下方「以「臺中車站」為地點搜尋附近」（或直接按 Enter）→ 依距離排序並出現起點
 - 「離我最近」會要求定位權限；拒絕時顯示提示
-- 手機寬度（< 820px）出現「清單／地圖」分頁，可用左右方向鍵切換
-- 「關於本站與免責 → 外觀」切換深色時，地圖也變深色
+- 手機寬度（≤ 820px）是全螢幕地圖＋底部面板：拖曳把手可在三段高度間切換；點卡片或標記會打開詳情；
+  返回鍵依序關閉篩選 → 詳情 → 把面板降回最低，不會直接離開本頁；Esc 也一樣
+- 「篩選與設定 → 外觀」切換深色時，地圖也變深色
+- 清單標題下方出現「車位 HH:MM 更新」，部分卡片顯示燈號；封鎖 motoretag.taichung.gov.tw 時其他功能照常
 ```
 
 ## 疑難排解
