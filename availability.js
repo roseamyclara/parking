@@ -4,6 +4,7 @@
  *   https://motoretag.taichung.gov.tw/DataAPI/api/ParkingAPIV2/Opendata
  * 這支 API 只有燈號（AvailableCarRGB：G／Y／R／B）與總車位數，沒有「剩餘幾格」的數字，
  * 所以畫面上只顯示燈號文字，絕不從顏色推算剩餘車位。
+ * 剩餘「數字」另外來自 TDX（見本檔下方 createCounts），有數字時以數字為準。
  *
  * 本檔不碰 DOM，可以直接用 Node 測試配對結果。
  */
@@ -234,5 +235,117 @@ export function createAvailability({ getItems, onChange, interval = 60000, stale
     lookup,
     get updatedAt() { return st.at ? new Date(st.at) : null; },
     get matchedCount() { return st.match.size; },
+  };
+}
+
+/* =====================================================================
+ * 剩餘車位「數字」：TDX（交通部運輸資料流通服務平臺）
+ *
+ * 瀏覽器不直接呼叫 TDX（需要金鑰）。GitHub Actions 約每 5 分鐘用 parking/scripts/tdx_availability.mjs
+ * 抓一次、配對好，寫成同站的 data/availability.json；這裡只讀那個靜態檔。
+ * 數字是「自小客車位」，不含機車。檔案不存在（剛部署、Actions 還沒跑）時安靜地什麼都不做，畫面照舊用燈號。
+ * ===================================================================== */
+export const COUNTS_URL = "data/availability.json";
+export const COUNTS_SOURCE_NAME = "交通部運輸資料流通服務平臺（TDX）";
+
+/**
+ * GitHub Pages 的 CDN 會快取 10 分鐘；用「每分鐘換一次」的查詢字串避開舊快取，
+ * 同一分鐘內的請求仍共用同一份 CDN 快取。
+ */
+export function countsUrl(now = Date.now(), bucketMs = 60000, base = COUNTS_URL) {
+  return base + "?t=" + Math.floor(now / bucketMs);
+}
+
+/** 剩餘數 → 燈號鍵（只拿來配顏色；文字一律是數字本身）。燈號說「即將滿／已滿」時至少顯示黃色。 */
+export function countKey(avail, total, lightCode) {
+  if (avail <= 0) return "full";
+  const low = total ? Math.max(3, Math.ceil(total * 0.1)) : 3;
+  if (avail <= low || lightCode === "Y" || lightCode === "R") return "few";
+  return "ok";
+}
+
+/**
+ * 解析 availability.json；個別停車場的回報時間太舊（maxAgeMs）就不給數字。
+ * @returns {Map<string, {avail:number,total:number|null,time:Date}>}
+ */
+export function parseCounts(json, now = Date.now(), maxAgeMs = 30 * 60000) {
+  const out = new Map();
+  const items = json && json.items;
+  if (!items || typeof items !== "object") return out;
+  const fileTime = Date.parse(json.update_time || json.generated_at);
+  for (const [id, v] of Object.entries(items)) {
+    if (!v || !Number.isFinite(v.avail) || v.avail < 0) continue;
+    const t = Date.parse(v.time) || fileTime;
+    if (!Number.isFinite(t) || now - t > maxAgeMs) continue;
+    out.set(id, { avail: v.avail, total: Number.isFinite(v.total) && v.total > 0 ? v.total : null, time: new Date(t) });
+  }
+  return out;
+}
+
+/**
+ * 定期讀 data/availability.json：頁面可見時每 60 秒，背景暫停；失敗時保留上一份
+ * （每次查詢時仍依各場回報時間判斷是否過舊，所以斷線很久也不會一直顯示舊數字）。
+ */
+export function createCounts({ onChange, interval = 60000, maxAgeMs = 30 * 60000, fetchImpl, url = COUNTS_URL }) {
+  const doFetch = fetchImpl || ((u, o) => fetch(u, o));
+  const st = { json: null, map: new Map(), parsedAt: 0, tried: 0, timer: 0, inflight: null, started: false, missing: false };
+
+  function current() {
+    // 每分鐘重算一次過舊判斷（不用等下一次抓檔）
+    if (st.json && Date.now() - st.parsedAt > 60000) { st.map = parseCounts(st.json, Date.now(), maxAgeMs); st.parsedAt = Date.now(); }
+    return st.map;
+  }
+
+  async function refresh() {
+    if (st.inflight) return st.inflight;
+    st.tried = Date.now();
+    st.inflight = (async () => {
+      try {
+        const res = await doFetch(countsUrl(Date.now(), 60000, url), { cache: "no-store" });
+        if (res.status === 404) { st.missing = true; return; }   // 尚未產生：只用燈號
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const json = await res.json();
+        if (!json || typeof json.items !== "object") throw new Error("格式不符");
+        st.missing = false;
+        st.json = json;
+        st.map = parseCounts(json, Date.now(), maxAgeMs);
+        st.parsedAt = Date.now();
+        onChange();
+      } catch (e) {
+        console.warn("剩餘車位數字暫時無法取得", e);
+        const before = st.map.size;
+        if (st.json && current().size !== before) onChange();
+      } finally {
+        st.inflight = null;
+      }
+    })();
+    return st.inflight;
+  }
+
+  function schedule() {
+    clearTimeout(st.timer);
+    if (document.hidden) return;
+    const wait = st.tried ? Math.max(0, interval - (Date.now() - st.tried)) : 0;
+    st.timer = setTimeout(async () => { await refresh(); schedule(); }, wait);
+  }
+
+  function start() {
+    if (st.started) return;
+    st.started = true;
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) clearTimeout(st.timer);
+      else schedule();
+    });
+    schedule();
+  }
+
+  return {
+    start,
+    refresh,
+    lookup: (id) => current().get(id) || null,
+    get size() { return current().size; },
+    /** TDX 整體更新時間（TDX 的時鐘） */
+    get updateTime() { const t = st.json && Date.parse(st.json.update_time || st.json.generated_at); return t && current().size ? new Date(t) : null; },
+    get matched() { return st.json ? +st.json.matched || 0 : 0; },
   };
 }

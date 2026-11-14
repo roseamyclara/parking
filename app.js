@@ -4,10 +4,11 @@
  *       桌機是左側面板＋右側地圖。同一套 DOM，用 CSS 斷點切換。
  * 地圖：Google Maps JavaScript API（動態載入 importLibrary）
  *       + AdvancedMarkerElement + @googlemaps/markerclusterer
- * 即時車位：臺中市交通局開放資料（availability.js），與 Google 金鑰無關。
+ * 即時車位：剩餘格數來自 TDX（由 GitHub Actions 寫成 data/availability.json），
+ *       沒有數字的停車場用臺中市交通局開放資料的燈號（availability.js），都與 Google 金鑰無關。
  * 沒有金鑰或載入失敗時，清單／搜尋／篩選／離我最近／地點搜尋（Nominatim）照常可用。
  */
-import { createAvailability, STATUS } from "./availability.js";
+import { createAvailability, createCounts, countKey, STATUS } from "./availability.js";
 
 const DATA_URL = "./data/parkings.json";
 const API_KEY = String(window.GOOGLE_MAPS_API_KEY || "").trim();
@@ -95,6 +96,14 @@ function haversine(a, b, c, d) {
 
 const fmtDist = (km) => km == null ? "" : km < 1 ? Math.round(km * 1000) + " 公尺" : km.toFixed(1) + " 公里";
 const fmtTime = (d) => d ? d.toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false }) : "";
+/** TDX 回報時間（臺灣時間）；不是今天就加上日期 */
+const fmtTpe = (d) => {
+  if (!d) return "";
+  const o = { timeZone: "Asia/Taipei" };
+  const day = (x) => x.toLocaleDateString("zh-TW", { ...o, month: "numeric", day: "numeric" });
+  const t = d.toLocaleTimeString("zh-TW", { ...o, hour: "2-digit", minute: "2-digit", hour12: false });
+  return day(d) === day(new Date()) ? t : day(d) + " " + t;
+};
 const norm = (s) => (s || "").replace(/台/g, "臺").toLowerCase();
 const hasGeo = (it) => it.lat != null && it.lng != null;
 
@@ -235,9 +244,17 @@ const avail = createAvailability({
   getItems: () => state.items,
   onChange: paintAvailability,
 });
+// 剩餘格數（TDX，同站靜態檔）。有數字就優先用數字；燈號只當顏色參考，不從燈號推算數字。
+const counts = createCounts({ onChange: paintAvailability });
 
 function statusOf(id) {
   const a = avail.lookup(id);
+  const c = counts.lookup(id);
+  if (c) {
+    const key = countKey(c.avail, c.total, a && a.code);
+    return { key, code: key === "full" ? "R" : key === "few" ? "Y" : "G", label: "剩 " + c.avail + " 格",
+      avail: c.avail, total: c.total, time: c.time, tdx: true };
+  }
   return a ? { ...STATUS[a.code], code: a.code, total: a.total } : null;
 }
 
@@ -247,9 +264,10 @@ function statusHTML(id, detailed) {
     return detailed ? '<p class="status" data-s="none"><i class="sdot" aria-hidden="true"></i>無即時車位資料</p>' : "";
   }
   if (!detailed && s.code === "B") return "";   // 卡片上不顯示「無即時資料」，保持簡潔
-  const total = detailed && s.total ? '<span class="muted">・共 ' + s.total + " 格</span>" : "";
-  return '<p class="status" data-s="' + s.key + '"><i class="sdot" aria-hidden="true"></i>' +
-    "<span><span class=\"visually-hidden\">即時車位：</span>" + s.label + total + "</span></p>";
+  const total = detailed && s.total ? '<span class="muted">・共 ' + s.total + " 格" + (s.tdx ? "（小型車）" : "") + "</span>" : "";
+  const label = s.tdx ? '<b class="num">' + s.label + "</b>" : s.label;
+  return '<p class="status" data-s="' + s.key + '"' + (s.tdx ? " data-n" : "") + '><i class="sdot" aria-hidden="true"></i>' +
+    "<span><span class=\"visually-hidden\">" + (s.tdx ? "小型車" : "即時車位：") + "</span>" + label + total + "</span></p>";
 }
 
 function paintAvailability() {
@@ -260,19 +278,19 @@ function paintAvailability() {
     else if (html) card.querySelector(".c-main").insertAdjacentHTML("beforeend", html);
   }
   G.markers.forEach((m, id) => {
-    const s = statusOf(id);
-    m.content.dataset.s = s ? s.key : "";
+    paintPin(m.content, statusOf(id));
     const it = state.byId.get(id);
-    if (it) m.title = it.name + (s && s.code !== "B" ? "（" + s.label + "）" : "");
+    if (it) m.title = pinTitle(it);
   });
   if (ui.view === "detail") {
     const box = el.detail.querySelector(".d-status");
     if (box) box.innerHTML = detailStatusInner(state.byId.get(state.activeId));
   }
   renderListHead();
-  el.availNote.textContent = avail.updatedAt
-    ? "目前有 " + avail.matchedCount + " 座停車場對應到即時資料，最後更新 " + fmtTime(avail.updatedAt) + "。"
-    : "";
+  const notes = [];
+  if (counts.updateTime) notes.push("目前有 " + counts.size + " 座停車場有 TDX 剩餘格數，TDX 資料時間 " + fmtTpe(counts.updateTime) + "（臺灣時間）。");
+  if (avail.updatedAt) notes.push("有 " + avail.matchedCount + " 座停車場對應到交通局燈號，本機最後讀取 " + fmtTime(avail.updatedAt) + "。");
+  el.availNote.textContent = notes.join("");
 }
 
 /* =====================================================================
@@ -744,19 +762,31 @@ function renderCluster({ count, position }) {
 }
 
 function pinContent(it) {
-  const s = statusOf(it.id);
   const d = h("div", { class: "pin" + (it.id === state.activeId ? " active" : "") }, h("b", { text: "P" }), h("i"));
-  d.dataset.s = s ? s.key : "";
+  paintPin(d, statusOf(it.id));
   return d;
+}
+
+/** 有剩餘格數時，P 的右上角小點換成一個小數字（同樣的顏色語言）；沒有就維持燈號小點 */
+function paintPin(d, s) {
+  d.dataset.s = s ? s.key : "";
+  const i = d.querySelector(":scope > i");
+  if (!i) return;
+  if (s && s.tdx) { i.textContent = s.avail > 999 ? "999+" : String(s.avail); d.dataset.n = ""; }
+  else { i.textContent = ""; delete d.dataset.n; }
+}
+
+function pinTitle(it) {
+  const s = statusOf(it.id);
+  return it.name + (s && s.code !== "B" ? "（" + s.label + "）" : "");
 }
 
 function getMarker(it) {
   let m = G.markers.get(it.id);
   if (m) return m;
-  const s = statusOf(it.id);
   m = new G.libs.AdvancedMarkerElement({
     position: { lat: it.lat, lng: it.lng },
-    title: it.name + (s && s.code !== "B" ? "（" + s.label + "）" : ""),
+    title: pinTitle(it),
     content: pinContent(it),
     gmpClickable: true,
     zIndex: it.id === state.activeId ? 4000 : null,
@@ -1029,10 +1059,11 @@ function renderListHead() {
   if (!state.dataReady) return;
   const narrowed = n !== total || state.query.trim();
   el.resultCount.textContent = narrowed ? "找到 " + n + " 座停車場" : total + " 座停車場";
-  const sort = state.sort === "distance" && state.origin ? "依距離（" + state.origin.label + "）"
+  const sort = state.sort === "distance" && state.origin ? "依距離"
     : state.sort === "name" ? "依名稱" : "依公告順序";
   const parts = [sort];
-  if (avail.updatedAt) parts.push("車位 " + fmtTime(avail.updatedAt) + " 更新");
+  if (counts.updateTime) parts.push("剩餘格數 " + fmtTpe(counts.updateTime) + "（TDX）");
+  else if (avail.updatedAt) parts.push("燈號 " + fmtTime(avail.updatedAt) + " 更新");
   el.listSub.textContent = parts.join("・");
   el.resetFilters.hidden = !filtersActive();
   el.filtersDone.textContent = "顯示 " + n + " 座";
@@ -1073,7 +1104,9 @@ function resetFilters() {
 function detailStatusInner(it) {
   if (!it) return "";
   const s = statusOf(it.id);
-  const when = s && avail.updatedAt ? "<small>" + fmtTime(avail.updatedAt) + " 更新・交通局開放資料</small>" : "";
+  const when = s && s.tdx
+    ? "<small>停車場回報 " + fmtTpe(s.time) + "（臺灣時間）・交通部 TDX</small>"
+    : s && avail.updatedAt ? "<small>" + fmtTime(avail.updatedAt) + " 更新・交通局開放資料</small>" : "";
   return statusHTML(it.id, true) + when;
 }
 
@@ -1366,7 +1399,6 @@ function locateMe() {
   navigator.geolocation.getCurrentPosition((pos) => {
     setNearBusy(false);
     setOrigin(pos.coords.latitude, pos.coords.longitude, "我的位置");
-    toast("已依離你最近排序");
   }, (err) => {
     setNearBusy(false);
     toast(err.code === 1
@@ -1454,7 +1486,6 @@ async function searchPlace(text, { pred = null } = {}) {
     el.clearQ.hidden = true;
     if (isSheet()) el.q.blur();
     setOrigin(r.lat, r.lng, label);
-    toast("已定位到「" + label + "」，依距離排序");
   } catch (e) {
     console.error(e);
     toast("地點搜尋服務暫時無法使用");
@@ -1875,6 +1906,7 @@ fetch(DATA_URL, { cache: "no-cache" })
     applyFilters();
     if (G.map) fitToResults();
     avail.start();      // 即時車位：與 Google 地圖金鑰無關，載不到也不影響其他功能
+    counts.start();     // 剩餘格數：同站靜態檔，404（尚未產生）時只用燈號
   })
   .catch((err) => {
     el.list.innerHTML = '<li class="empty">資料載入失敗（' + esc(err.message) +

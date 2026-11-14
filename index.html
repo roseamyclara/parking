@@ -58,7 +58,7 @@
 
       <div class="originchip" id="originBar" hidden>
         <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="4" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2" opacity=".45"/></svg>
-        <span class="originchip-text"><strong id="originName"></strong> 附近・依距離排序</span>
+        <span class="originchip-text"><strong id="originName"></strong></span>
         <button type="button" class="iconbtn small" id="clearOrigin" aria-label="取消地點，恢復原本排序">
           <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
         </button>
@@ -144,7 +144,8 @@
             <p id="metaCount">載入中…</p>
             <p id="footDates"></p>
             <p>停車場名單：<a href="https://tcparking.taichung.gov.tw/ParkWeb/Pages/PublicService/LoveCardSchedule" target="_blank" rel="noopener">臺中市停車資訊網 — 身障免銷單服務已上線停車場</a>（每日 00:00 自動更新）。</p>
-            <p>即時車位燈號：<a href="https://motoretag.taichung.gov.tw/DataAPI/api/ParkingAPIV2/Opendata" target="_blank" rel="noopener">臺中市政府交通局「路外剩餘車位」開放資料</a>，約每分鐘更新。只提供「尚有車位／即將滿場／已滿」燈號，不是剩餘車位數；以名稱比對，部分停車場沒有即時資料。<span id="availNote"></span></p>
+            <p>剩餘格數：<a href="https://tdx.transportdata.tw/" target="_blank" rel="noopener">交通部運輸資料流通服務平臺（TDX）</a>路外停車場即時剩餘車位，由本站的 GitHub Actions 約每 5 分鐘抓一次（GitHub 排程可能延遲，網頁快取也可能再晚幾分鐘）。顯示的是<strong>小型車（自小客車）</strong>車位，不含機車；時間為停車場回報給 TDX 的時間（臺灣時間），超過 30 分鐘沒更新就不顯示數字。以停車場名稱比對，少數停車場對不到或沒有數字。</p>
+            <p>即時車位燈號：<a href="https://motoretag.taichung.gov.tw/DataAPI/api/ParkingAPIV2/Opendata" target="_blank" rel="noopener">臺中市政府交通局「路外剩餘車位」開放資料</a>，約每分鐘更新。沒有剩餘格數的停車場改顯示「尚有車位／即將滿場／已滿」燈號（不是剩餘車位數）；以名稱比對，部分停車場沒有即時資料。<span id="availNote"></span></p>
             <p>評分與評論：來自 Google 地圖的使用者內容，只有在打開某座停車場的詳情時才會載入（並暫存在這台裝置上約 7 天），可能對應不到或沒有資料；<strong>不是交通局的官方資料</strong>，也不代表本站立場。搜尋時的「地點」建議同樣由 Google 提供。</p>
             <p>地圖：Google 地圖。座標由地理編碼推估，實際位置請以現場標示為準；免銷單服務內容與適用對象，一律以臺中市政府交通局公告為準。</p>
             <p><strong>本站為民間製作的資料整理工具，非官方網站。</strong></p>

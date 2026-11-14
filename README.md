@@ -13,6 +13,9 @@
         │  ② geocode.py（把地址轉座標，結果存快取，只查新增的）
         ▼
   parking/data/parkings.json ──► ③ parking/index.html（Google 地圖）
+                                      ▲
+  交通部 TDX 剩餘車位 ── tdx_availability.mjs（約每 5 分鐘，GitHub Actions）
+                          └► parking/data/availability.json
 ```
 
 ## 檔案在哪
@@ -20,14 +23,16 @@
 | 路徑 | 用途 |
 | --- | --- |
 | `.github/workflows/update-parking.yml` | 每日排程（**一定要放在 `.github/workflows/` 裡才會執行**） |
+| `.github/workflows/update-tdx-availability.yml` | 約每 5 分鐘抓 TDX 剩餘車位，寫 `parking/data/availability.json` |
 | `parking/index.html` | 網站本體（入口） |
 | `parking/app.js`、`parking/app.css` | 前端程式與樣式（ES module，無建置步驟） |
-| `parking/availability.js` | 即時車位燈號：抓交通局開放資料、與本站停車場配對（不碰 DOM，可用 Node 測試） |
+| `parking/availability.js` | 即時車位：交通局燈號（瀏覽器直接抓）＋讀取 TDX 剩餘格數檔；`matchLots` 配對（可用 Node 測試） |
 | `parking/config.js` | **前端設定：Google 地圖瀏覽器金鑰與 Map ID** |
 | `parking/lib/` | 舊版 Leaflet 函式庫（目前已不使用，保留備查） |
 | `parking/scripts/` | 爬蟲與地理編碼程式 |
 | `parking/cache/` | 中繼檔與座標快取（自動產生、自動 commit） |
 | `parking/data/parkings.json` | 網站讀取的資料檔（自動產生） |
+| `parking/data/availability.json` | TDX 剩餘格數（自動產生；不存在時網頁只顯示燈號） |
 
 ## 功能
 
@@ -36,7 +41,8 @@
 - ⭐ 停車場詳情裡的「Google 的評分與評論」（只在打開詳情時載入，見下方說明）
 - 🧭 「離我最近」瀏覽器定位排序
 - 🏷 依行政區、免銷單進出場方式篩選（收在搜尋列右側的「篩選與設定」）
-- 🚦 即時車位燈號（尚有車位／即將滿場／已滿），約每分鐘更新
+- 🔢 剩餘格數「剩 N 格」（小型車，交通部 TDX，約每 5 分鐘），顯示在卡片、詳情與地圖標記上
+- 🚦 沒有剩餘格數的停車場顯示即時車位燈號（尚有車位／即將滿場／已滿），約每分鐘更新
 - 🗺 Google 地圖標記自動分群，點選後在面板顯示詳情、一鍵開 Google 導航
 - 📱 手機：全螢幕地圖＋浮動搜尋列＋可拖曳的底部面板（三段高度，Android 返回鍵會先收起面板）；
   桌機：左側面板＋右側地圖。深色模式（在「篩選與設定」切換外觀）、鍵盤操作、Windows 高對比、減少動態效果皆支援
@@ -147,14 +153,47 @@ window.GOOGLE_MAPS_MAP_ID  = "DEMO_MAP_ID"; // 進階標記需要；可換成自
   在同一行政區內比對正規化後的名稱（臺／台、去括號、去「停車場／附屬／地下…」、A／B 區保留），
   名稱必須唯一；地下、平面、立體不同的視為不同停車場。最後才用座標備援（45 公尺內唯一、且不能一對多）。
   目前約 266／290 座配得到，其餘顯示「無即時車位資料」，寧可不顯示也不顯示錯的。
-- 想要**精確的剩餘車位數**：交通部 TDX 的 `Parking/OffStreet/ParkingAvailability/City/Taichung` 有數字、約每分鐘更新，
-  但需要 client id／secret（未授權會 401）且有流量限制，**secret 不能放在 GitHub Pages 前端**。
-  可行做法是另寫 GitHub Actions 定期把結果寫到 `parking/data/availability.json`，或架一個小型的授權代理；目前尚未實作。
+- 有 TDX 剩餘格數的停車場以數字為準（見下一節），燈號只當顏色參考。
 
 離線檢查配對結果（把 API 回應存成檔案後）：
 
 ```bash
 node -e 'import("./parking/availability.js").then(m=>{const fs=require("fs");const r=m.matchLots(JSON.parse(fs.readFileSync("parking/data/parkings.json")).items,JSON.parse(fs.readFileSync("/tmp/opendata.json")));console.log(r.size)})'
+```
+
+## 剩餘車位數（TDX）
+
+來源：[交通部運輸資料流通服務平臺（TDX）](https://tdx.transportdata.tw/)
+`/api/basic/v1/Parking/OffStreet/ParkingAvailability/City/Taichung`。
+
+- TDX 需要 client id／secret，**瀏覽器不直接呼叫 TDX**。金鑰只存在 repo 的 Actions secrets
+  `TDX_CLIENT_ID`、`TDX_CLIENT_SECRET`，由 `.github/workflows/update-tdx-availability.yml` 使用；
+  網頁只讀同站的靜態檔 `parking/data/availability.json`：
+  ```json
+  { "generated_at": "…+08:00", "source": "…TDX…", "update_time": "…", "matched": 265, "count": 257,
+    "items": { "<parkings.json 的 id>": { "avail": 12, "total": 290, "time": "…+08:00" } } }
+  ```
+  `matched` 是配對到 TDX 的座數，`count` 是其中有新鮮數字、寫進 `items` 的座數。
+- **只算小型車**：TDX 頂層的 `TotalSpaces／AvailableSpaces` 含機車（例：自由一期立體 470／199，
+  其中自小客車 290／79、機車 180／120）。程式取 `Availabilities` 裡 `SpaceType === 1`（自小客車）的
+  `NumberOfSpaces／AvailableSpaces`；只有沒有 type 1 時才退回頂層數字。
+- **配對**：TDX 的 `CarParkName.Zh_tw` 和交通局開放資料的 `Position` 是同一種「區-機關-名稱P」字串，
+  所以直接沿用 `matchLots`（TDX 的 `CarParkID` 和交通局 `ID` 不同，不能拿來對）。座標從交通局資料依完全相同的名稱借用，
+  讓 45 公尺座標備援也能用。一座 TDX 停車場絕不會同時配給本站兩筆。目前約 265／290 座配得到。
+- **過舊不顯示**：個別停車場的 `DataCollectTime` 比 TDX 整體更新時間舊 60 分鐘以上就不寫進檔案
+  （實測有幾座停在好幾個月前）；網頁端再以手機時鐘檢查，超過 30 分鐘的數字也不顯示，改回燈號。
+- **更新頻率**：排程是 `*/5 * * * *`，但 GitHub 的 cron 是盡力而為，常常延遲幾分鐘到更久，尖峰時甚至略過。
+  GitHub Pages 的 CDN 另外快取約 10 分鐘，網頁用每分鐘換一次的查詢字串（`?t=…`）加上 `cache: "no-store"` 避開；
+  頁面可見時每 60 秒重讀，切到背景暫停，失敗時保留上一份。
+- **安全閥**：TDX 或配對失敗、有數字的停車場少於 50 座、或比上一份少一半以上時，程式以錯誤結束、**不覆蓋原檔**；
+  內容沒變時不重寫，也就不會有空 commit。push 前先 `git pull --rebase`，避免和每日更新互相卡住。
+- 檔案不存在（剛部署、排程還沒跑過）時網頁照常，只顯示燈號；和 Google 金鑰無關。
+
+本機執行（金鑰自行放在環境變數，不要寫進任何會 commit 的檔案）：
+
+```bash
+TDX_CLIENT_ID=… TDX_CLIENT_SECRET=… node parking/scripts/tdx_availability.mjs
+node --test parking/scripts/test_tdx_availability.mjs     # 離線測試，不需要金鑰
 ```
 
 ## 日常維護
@@ -223,7 +262,8 @@ cd parking && python -m http.server 8000  # 開 http://localhost:8000
 - 手機寬度（≤ 820px）是全螢幕地圖＋底部面板：拖曳把手可在三段高度間切換；點卡片或標記會打開詳情；
   返回鍵依序關閉篩選 → 詳情 → 把面板降回最低，不會直接離開本頁；Esc 也一樣
 - 「篩選與設定 → 外觀」切換深色時，地圖也變深色
-- 清單標題下方出現「車位 HH:MM 更新」，部分卡片顯示燈號；封鎖 motoretag.taichung.gov.tw 時其他功能照常
+- 清單標題下方出現「剩餘格數 HH:MM（TDX）」，多數卡片顯示「剩 N 格」、地圖標記右上角有小數字；
+  刪掉或改名 `data/availability.json` 時退回「燈號 HH:MM 更新」與燈號；封鎖 motoretag.taichung.gov.tw 時其他功能照常
 ```
 
 ## 疑難排解
@@ -231,6 +271,7 @@ cd parking && python -m http.server 8000  # 開 http://localhost:8000
 | 症狀 | 處理 |
 | --- | --- |
 | 網頁顯示「資料載入失敗」 | `parking/data/parkings.json` 還沒產生，去 Actions 手動跑一次。 |
+| 卡片沒有「剩 N 格」、只有燈號 | 看 Actions「更新 TDX 剩餘車位」是否失敗（金鑰過期、TDX 維護、配對數驟降都會讓它停下而不覆蓋舊檔）；排程延遲超過 30 分鐘時網頁也會自動改回燈號。 |
 | Actions 在 commit 那步失敗，寫 permission denied | Settings → Actions → General → Workflow permissions 要設成 **Read and write**。 |
 | 爬蟲失敗「只解析到 N 筆」 | 對方網站改版了。`scripts/scrape.py` 的 `COLUMN_MAP` 是用表頭文字比對，把新欄位名稱加進去即可。程式刻意在這種情況中止，不會覆蓋掉原本正確的資料。 |
 | 某幾個停車場座標偏掉 | 原始資料的「位置」欄常常只有路名沒門牌，只能定位到路段。可以直接編輯 `parking/cache/geocache.json` 裡那一筆的 `lat`／`lng`，之後更新會沿用你改的值。 |
@@ -243,6 +284,7 @@ cd parking && python -m http.server 8000  # 開 http://localhost:8000
 ## 資料來源與免責
 
 - 資料來源：[臺中市停車資訊網 — 身障免銷單服務已上線停車場](https://tcparking.taichung.gov.tw/ParkWeb/Pages/PublicService/LoveCardSchedule)
+- 剩餘車位數：[交通部運輸資料流通服務平臺（TDX）](https://tdx.transportdata.tw/)；燈號：臺中市政府交通局「路外剩餘車位」開放資料
 - 地點建議、評分與評論：Google 地圖（Places API (New)），屬於 Google 使用者內容，非官方資料
 - 地圖：[Google 地圖](https://www.google.com/maps)（Maps JavaScript API）、[@googlemaps/markerclusterer](https://github.com/googlemaps/js-markerclusterer)
 - 座標（每日排程）與備援地點搜尋：[OpenStreetMap](https://www.openstreetmap.org/copyright) 貢獻者（Nominatim）
