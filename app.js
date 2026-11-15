@@ -8,9 +8,8 @@
  *       沒有數字的停車場用臺中市交通局開放資料的燈號（availability.js），都與 Google 金鑰無關。
  * 沒有金鑰或載入失敗時，清單／搜尋／篩選／離我最近／地點搜尋（Nominatim）照常可用。
  */
-import { createAvailability, createCounts, countKey, STATUS } from "./availability.js?v=20261115094023";
-import { TC_BOUNDS, keepPrediction, isTaichungPlace, autocompleteRequest } from "./region.js?v=20261115094023";
-import { hasGeo, fmtDist, distLabel, navUrl as navUrlFrom } from "./origin.js?v=20261115094023";
+import { createAvailability, createCounts, countKey, STATUS } from "./availability.js?v=20261115002414";
+import { TC_BOUNDS, keepPrediction, isTaichungPlace, autocompleteRequest } from "./region.js?v=20261115002414";
 
 const DATA_URL = "./data/parkings.json";
 const API_KEY = String(window.GOOGLE_MAPS_API_KEY || "").trim();
@@ -58,7 +57,7 @@ const state = {
   access: new Set(),      // 原始進出場方式字串
   accessGroups: [],       // [{ label, values: [...] }]
   sort: "default",
-  origin: null,           // { lat, lng, label, kind: "place" | "gps" }；點選停車場不會改動
+  origin: null,           // { lat, lng, label }
   activeId: null,
   dataReady: false,
 };
@@ -96,6 +95,7 @@ function haversine(a, b, c, d) {
   return 2 * R * Math.asin(Math.sqrt(s));
 }
 
+const fmtDist = (km) => km == null ? "" : km < 1 ? Math.round(km * 1000) + " 公尺" : km.toFixed(1) + " 公里";
 const fmtTime = (d) => d ? d.toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false }) : "";
 /** TDX 回報時間（臺灣時間）；不是今天就加上日期 */
 const fmtTpe = (d) => {
@@ -106,14 +106,20 @@ const fmtTpe = (d) => {
   return day(d) === day(new Date()) ? t : day(d) + " " + t;
 };
 const norm = (s) => (s || "").replace(/台/g, "臺").toLowerCase();
+const hasGeo = (it) => it.lat != null && it.lng != null;
 
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-// 導航：起點是搜尋的地點就帶 origin；GPS 或沒有起點就讓 Google 地圖用目前位置（見 origin.js）
-const navUrl = (it) => navUrlFrom(it, state.origin);
+// 座標只推估到行政區中心的停車場，導航改用名稱＋地址，免得把人帶到區公所附近
+function navUrl(it) {
+  const dest = hasGeo(it) && it.precision !== "DISTRICT"
+    ? it.lat + "," + it.lng
+    : [it.name, it.address || it.location].filter(Boolean).join(" ");
+  return "https://www.google.com/maps/dir/?api=1&destination=" + encodeURIComponent(dest);
+}
 
 function h(tag, props, ...children) {
   const n = document.createElement(tag);
@@ -1019,7 +1025,7 @@ function applyFilters() {
 function cardHTML(it) {
   const active = state.activeId === it.id;
   const meta = [];
-  if (it._d != null) meta.push('<span class="dist"><span aria-hidden="true">' + fmtDist(it._d) + '</span><span class="visually-hidden">' + esc(distLabel(it._d, state.origin)) + "</span></span>");
+  if (it._d != null) meta.push('<span class="dist">' + fmtDist(it._d) + "</span>");
   meta.push(esc(it.district));
   meta.push('<span class="visually-hidden">進出場方式：</span>' + esc(shortAccess(it.access)));
   if (!hasGeo(it)) meta.push("座標待補");
@@ -1105,31 +1111,16 @@ function detailStatusInner(it) {
   return statusHTML(it.id, true) + when;
 }
 
-function detailMetaHTML(it) {
-  const meta = [];
-  const d = state.origin && hasGeo(it) ? haversine(state.origin.lat, state.origin.lng, it.lat, it.lng) : null;
-  if (d != null) meta.push('<span class="dist">' + esc(distLabel(d, state.origin)) + "</span>");
-  meta.push(esc(it.district));
-  return meta.join(SEP);
-}
-
-/** 起點變了：只更新詳情的距離與導航連結（不重畫 Google 評論區） */
-function refreshDetailOrigin() {
-  const it = ui.view === "detail" && state.byId.get(state.activeId);
-  if (!it) return;
-  const m = el.detail.querySelector(".d-meta");
-  if (m) m.innerHTML = detailMetaHTML(it);
-  const a = el.detail.querySelector(".d-actions a.primary");
-  if (a) a.href = navUrl(it);
-}
-
 function renderDetail() {
   const it = state.byId.get(state.activeId);
   if (!it) return;
   el.dName.textContent = it.name;
+  const meta = [];
+  if (it._d != null) meta.push('<span class="dist">距離約 ' + fmtDist(it._d) + "</span>");
+  meta.push(esc(it.district));
   const phones = findPhones(it.access + " " + (it.location || ""));
   el.detail.innerHTML =
-    '<p class="d-meta">' + detailMetaHTML(it) + "</p>" +
+    '<p class="d-meta">' + meta.join(SEP) + "</p>" +
     '<div class="d-status">' + detailStatusInner(it) + "</div>" +
     '<div class="d-actions">' +
       '<a class="btn primary" href="' + esc(navUrl(it)) + '" target="_blank" rel="noopener">' + ICON_NAV +
@@ -1368,8 +1359,8 @@ el.detail.addEventListener("click", (e) => {
 /* =====================================================================
  * 起點（離我最近／地點搜尋）
  * ===================================================================== */
-function setOrigin(lat, lng, label, kind) {
-  state.origin = { lat, lng, label, kind };
+function setOrigin(lat, lng, label) {
+  state.origin = { lat, lng, label };
   el.originName.textContent = label;
   el.originBar.hidden = false;
   state.sort = "distance";
@@ -1390,7 +1381,6 @@ function clearOrigin() {
   if (G.originMarker) { G.originMarker.map = null; G.originMarker = null; }
   if (state.sort === "distance") state.sort = "default";
   applyFilters();
-  refreshDetailOrigin();
   fitToResults();
   queueLayout();
   // 按鈕消失了，焦點要有去處；手機上不要因此跳出鍵盤
@@ -1409,7 +1399,7 @@ function locateMe() {
   setNearBusy(true);
   navigator.geolocation.getCurrentPosition((pos) => {
     setNearBusy(false);
-    setOrigin(pos.coords.latitude, pos.coords.longitude, "我的位置", "gps");
+    setOrigin(pos.coords.latitude, pos.coords.longitude, "我的位置");
   }, (err) => {
     setNearBusy(false);
     toast(err.code === 1
@@ -1508,7 +1498,7 @@ async function searchPlace(text, { pred = null } = {}) {
     el.q.value = "";
     el.clearQ.hidden = true;
     if (isSheet()) el.q.blur();
-    setOrigin(r.lat, r.lng, label, "place");
+    setOrigin(r.lat, r.lng, label);
   } catch (e) {
     console.error(e);
     toast("地點搜尋服務暫時無法使用");
