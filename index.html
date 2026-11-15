@@ -5,12 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="text-scale" content="scale">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1216" media="(prefers-color-scheme: dark)">
 <script>
-  // 只做一件事：在第一次繪製前套用使用者選的外觀，避免閃爍。
-  try { document.querySelector('meta[name="color-scheme"]').content = localStorage.getItem("color-scheme") || "light dark"; } catch (e) {}
+  // 只做一件事：在第一次繪製前套用使用者選的外觀（含瀏覽器列顏色），避免閃爍。
+  // 顏色需與 app.js 的 THEME_COLORS 一致。
+  try {
+    var cs = localStorage.getItem("color-scheme");
+    document.querySelector('meta[name="color-scheme"]').content = cs || "light dark";
+    if (cs === "light" || cs === "dark") document.querySelectorAll('meta[name="theme-color"]').forEach(function (m) { m.content = cs === "dark" ? "#0f1216" : "#f6f7f9"; });
+  } catch (e) {}
 </script>
-<meta name="theme-color" content="#f4f6f9" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#14171c" media="(prefers-color-scheme: dark)">
 <title>臺中市身障免銷單停車場地圖</title>
 <meta name="description" content="臺中市身心障礙者免銷單服務已上線停車場，可依名稱、地點、進出場方式搜尋，顯示離您最近的停車場與即時車位燈號。資料每日自動更新。">
 <link rel="preconnect" href="https://maps.googleapis.com">
@@ -80,6 +85,7 @@
 
         <div class="head head-list">
           <div class="head-text">
+            <p class="sheet-brand" aria-hidden="true">臺中市身障免銷單停車場地圖</p>
             <h2 class="head-title" id="listTitle"><span id="resultCount">載入中…</span></h2>
             <p class="head-sub" id="listSub"></p>
           </div>

@@ -200,7 +200,7 @@ const ICON_PHONE = '<svg aria-hidden="true" viewBox="0 0 24 24" width="18" heigh
  * ===================================================================== */
 const schemeMeta = document.querySelector('meta[name="color-scheme"]');
 const themeColorMetas = [...document.querySelectorAll('meta[name="theme-color"]')];
-const THEME_COLORS = { light: "#f4f6f9", dark: "#14171c" };
+const THEME_COLORS = { light: "#f6f7f9", dark: "#0f1216" };   // 與 index.html 開頭的 theme-color 一致
 
 function storedScheme() {
   const v = schemeMeta.content;
