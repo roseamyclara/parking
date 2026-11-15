@@ -55,7 +55,7 @@
   --dur: 0.18s;
 
   /* 字體：CJK 優先，絕不退到只有拉丁字的字體 */
-  --font: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", "Noto Sans CJK TC", system-ui, -apple-system, "Segoe UI", sans-serif;
   /* 流體字級（360px → 1280px） */
   --fs-2xs: 0.6875rem;
   --fs-xs: clamp(0.75rem, 0.734rem + 0.07vw, 0.8125rem);
@@ -528,7 +528,7 @@ a.g-author { text-decoration: underline; text-decoration-color: color-mix(in okl
   box-shadow: 0 0 0 1px var(--line), var(--shadow-1);
 }
 .seg label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
-.seg label:has(input:disabled) { opacity: 0.5; cursor: not-allowed; }
+.seg label:has(input:disabled) { opacity: 0.62; cursor: not-allowed; }  /* 停用但仍讀得出字；下方提示說明怎麼啟用 */
 .selectwrap { position: relative; }
 .selectwrap::after {
   content: ""; position: absolute; inset-inline-end: 1rem; top: 50%;
@@ -700,9 +700,13 @@ a.g-author { text-decoration: underline; text-decoration-color: color-mix(in okl
     will-change: translate;
   }
   .sheet.dragging { transition: none; }
-  .sheet-head { touch-action: none; cursor: grab; padding-block-start: 1rem; user-select: none; -webkit-user-select: none; }
+  .sheet-head { touch-action: none; cursor: grab; padding-block-start: 0.875rem; user-select: none; -webkit-user-select: none; }
   .sheet.dragging .sheet-head { cursor: grabbing; }
-  .head-list { padding-block-end: 0.625rem; }
+  /* 品牌行加進來後，預設高度仍要看得到一整張卡片＋下一張的邊：標題區收緊，副標題可換行、不裁切 */
+  .head-list { padding-block: 0.25rem 0.5rem; min-block-size: 0; }
+  .head-list .sheet-brand { margin-block-end: 0.1875rem; }
+  .head-list .head-title { line-height: 1.25; }
+  .head-list .head-sub { margin-block-start: 0.0625rem; line-height: 1.4; }
   .grab {
     position: absolute; z-index: 1; top: 0; left: 50%; translate: -50% 0;
     inline-size: 5rem; block-size: var(--tap);
@@ -785,6 +789,10 @@ a.g-author { text-decoration: underline; text-decoration-color: color-mix(in okl
   .grab-bar { background: CanvasText; }
   .skip { border: 2px solid CanvasText; }
 }
+
+/* ---------- 外觀切換：同文件 View Transition（只在 app.js 判斷支援且未要求減少動態時才會啟動） ---------- */
+::view-transition-old(root),
+::view-transition-new(root) { animation-duration: 0.2s; animation-timing-function: var(--ease); }
 
 /* ---------- reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {

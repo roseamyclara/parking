@@ -8,8 +8,8 @@
  *       沒有數字的停車場用臺中市交通局開放資料的燈號（availability.js），都與 Google 金鑰無關。
  * 沒有金鑰或載入失敗時，清單／搜尋／篩選／離我最近／地點搜尋（Nominatim）照常可用。
  */
-import { createAvailability, createCounts, countKey, STATUS } from "./availability.js?v=20261115002414";
-import { TC_BOUNDS, keepPrediction, isTaichungPlace, autocompleteRequest } from "./region.js?v=20261115002414";
+import { createAvailability, createCounts, countKey, STATUS } from "./availability.js?v=20261115113349";
+import { TC_BOUNDS, keepPrediction, isTaichungPlace, autocompleteRequest } from "./region.js?v=20261115113349";
 
 const DATA_URL = "./data/parkings.json";
 const API_KEY = String(window.GOOGLE_MAPS_API_KEY || "").trim();
@@ -228,7 +228,15 @@ function setScheme(v) {
   syncThemeUI();
   onSchemeChange();
 }
-el.themeSeg.addEventListener("change", (e) => { if (e.target.name === "theme") setScheme(e.target.value); });
+// 切換外觀時整頁淡入淡出一次（同文件 View Transition）。不支援、偏好減少動態、或實際顏色沒變時就直接套用。
+function setSchemeAnimated(v) {
+  const before = resolvedScheme();
+  const willChange = (v === "light dark" ? (mqDark.matches ? "dark" : "light") : v) !== before;
+  if (!willChange || !document.startViewTransition || mqReduce.matches || document.hidden) { setScheme(v); return; }
+  try { document.startViewTransition(() => setScheme(v)); }
+  catch (e) { setScheme(v); }
+}
+el.themeSeg.addEventListener("change", (e) => { if (e.target.name === "theme") setSchemeAnimated(e.target.value); });
 mqDark.addEventListener("change", () => { syncThemeUI(); onSchemeChange(); });
 window.addEventListener("storage", (e) => {
   if (e.key !== "color-scheme") return;

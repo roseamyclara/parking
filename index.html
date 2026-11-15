@@ -21,7 +21,13 @@
 <link rel="preconnect" href="https://maps.googleapis.com">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="preconnect" href="https://motoretag.taichung.gov.tw" crossorigin>
-<link rel="stylesheet" href="./app.css?v=20261115002414">
+<!-- Noto Sans TC：單一可變字重檔（400–700），Google 依 unicode-range 切片，只下載畫面用到的字。
+     以 media="print" 載入、onload 後才套用，不擋第一次繪製；字型到之前用系統中文字型（font-display: swap）。 -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400..700&amp;display=swap" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400..700&amp;display=swap"></noscript>
+<link rel="stylesheet" href="./app.css?v=20261115113349">
 </head>
 <body>
 <a class="skip" href="#list">跳到停車場清單</a>
@@ -170,7 +176,7 @@
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <p class="visually-hidden" id="liveCount" role="status" aria-live="polite"></p>
 
-<script src="./config.js?v=20261115002414"></script>
-<script src="./app.js?v=20261115002414" type="module"></script>
+<script src="./config.js?v=20261115113349"></script>
+<script src="./app.js?v=20261115113349" type="module"></script>
 </body>
 </html>
