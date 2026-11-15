@@ -1,4 +1,4 @@
-// 離線測試：node --test parking/scripts/test_*.mjs
+// 離線測試：node --test scripts/test_*.mjs
 // availability.js 讀 data/availability.json 的部分（parseCounts / createCounts），
 // 以及 bump-asset-version.mjs 的版本字串。
 import test from "node:test";

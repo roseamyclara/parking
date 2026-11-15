@@ -9,32 +9,41 @@
   臺中市停車資訊網
         │  ① scrape.py（每天 00:00 由 GitHub Actions 執行）
         ▼
-  parking/cache/parkings_raw.json
+  cache/parkings_raw.json
         │  ② geocode.py（把地址轉座標，結果存快取，只查新增的）
         ▼
-  parking/data/parkings.json ──► ③ parking/index.html（Google 地圖）
-                                      ▲
+  data/parkings.json ──► ③ index.html（Google 地圖）
+                              ▲
   交通部 TDX 剩餘車位 ── tdx_availability.mjs（約每 5 分鐘，GitHub Actions）
-                          └► parking/data/availability.json
+                          └► data/availability.json
 ```
+
+## 儲存庫與部署
+
+- 這是 **roseamyclara/parking**（原本放在 `roseamyclara/roseamyclara.github.io` 的 `parking/` 子目錄，已用 git subtree 拆出來），預設分支 **`main`**。
+- 網站檔案都在 repo 根目錄（`index.html`、`app.js`、`app.css`、`scripts/`、`data/`、`cache/`…）；指令都在根目錄執行，例如 `node scripts/bump-asset-version.mjs`、`python scripts/scrape.py`、`node --test scripts/test_*.mjs`。
+- GitHub Pages：**Settings → Pages → Deploy from a branch → `main` / `(root)`**；網址仍是 **https://roseamyclara.github.io/parking/**。
+- 兩個 GitHub Actions 工作流程：
+  - `.github/workflows/update-parking.yml`：每日 00:00（臺灣時間）爬表格＋地理編碼，也可手動觸發；`main` 上改了 `scripts/` 或此檔時也會跑。
+  - `.github/workflows/update-tdx-availability.yml`：約每 5 分鐘更新 `data/availability.json`（concurrency group `tdx`）。
 
 ## 檔案在哪
 
 | 路徑 | 用途 |
 | --- | --- |
 | `.github/workflows/update-parking.yml` | 每日排程（**一定要放在 `.github/workflows/` 裡才會執行**） |
-| `.github/workflows/update-tdx-availability.yml` | 約每 5 分鐘抓 TDX 剩餘車位，寫 `parking/data/availability.json` |
-| `parking/index.html` | 網站本體（入口） |
-| `parking/app.js`、`parking/app.css` | 前端程式與樣式（ES module，無建置步驟） |
-| `parking/availability.js` | 即時車位：交通局燈號（瀏覽器直接抓）＋讀取 TDX 剩餘格數檔；`matchLots` 配對（可用 Node 測試） |
-| `parking/region.js` | 只收臺中市的地點：Autocomplete 的 `locationRestriction`、地址／座標檢查（可用 Node 測試） |
-| `parking/config.js` | **前端設定：Google 地圖瀏覽器金鑰與 Map ID** |
-| `parking/ASSET_VERSION` | 前端靜態檔的版本字串（`?v=`），由 `scripts/bump-asset-version.mjs` 更新 |
-| `parking/lib/` | 舊版 Leaflet 函式庫（目前已不使用，保留備查） |
-| `parking/scripts/` | 爬蟲與地理編碼程式 |
-| `parking/cache/` | 中繼檔與座標快取（自動產生、自動 commit） |
-| `parking/data/parkings.json` | 網站讀取的資料檔（自動產生） |
-| `parking/data/availability.json` | TDX 剩餘格數（自動產生；不存在時網頁只顯示燈號） |
+| `.github/workflows/update-tdx-availability.yml` | 約每 5 分鐘抓 TDX 剩餘車位，寫 `data/availability.json` |
+| `index.html` | 網站本體（入口） |
+| `app.js`、`app.css` | 前端程式與樣式（ES module，無建置步驟） |
+| `availability.js` | 即時車位：交通局燈號（瀏覽器直接抓）＋讀取 TDX 剩餘格數檔；`matchLots` 配對（可用 Node 測試） |
+| `region.js` | 只收臺中市的地點：Autocomplete 的 `locationRestriction`、地址／座標檢查（可用 Node 測試） |
+| `config.js` | **前端設定：Google 地圖瀏覽器金鑰與 Map ID** |
+| `ASSET_VERSION` | 前端靜態檔的版本字串（`?v=`），由 `scripts/bump-asset-version.mjs` 更新 |
+| `lib/` | 舊版 Leaflet 函式庫（目前已不使用，保留備查） |
+| `scripts/` | 爬蟲與地理編碼程式 |
+| `cache/` | 中繼檔與座標快取（自動產生、自動 commit） |
+| `data/parkings.json` | 網站讀取的資料檔（自動產生） |
+| `data/availability.json` | TDX 剩餘格數（自動產生；不存在時網頁只顯示燈號） |
 
 ## 功能
 
@@ -115,7 +124,7 @@
 
 瀏覽器金鑰需要啟用 **Maps JavaScript API** 與 **Places API (New)**。
 
-### `parking/config.js`
+### `config.js`
 
 ```js
 window.GOOGLE_MAPS_API_KEY = "AIza…";   // 瀏覽器端金鑰，會公開在網頁上
@@ -160,7 +169,7 @@ window.GOOGLE_MAPS_MAP_ID  = "DEMO_MAP_ID"; // 進階標記需要；可換成自
 離線檢查配對結果（把 API 回應存成檔案後）：
 
 ```bash
-node -e 'import("./parking/availability.js").then(m=>{const fs=require("fs");const r=m.matchLots(JSON.parse(fs.readFileSync("parking/data/parkings.json")).items,JSON.parse(fs.readFileSync("/tmp/opendata.json")));console.log(r.size)})'
+node -e 'import("./availability.js").then(m=>{const fs=require("fs");const r=m.matchLots(JSON.parse(fs.readFileSync("data/parkings.json")).items,JSON.parse(fs.readFileSync("/tmp/opendata.json")));console.log(r.size)})'
 ```
 
 ## 剩餘車位數（TDX）
@@ -170,7 +179,7 @@ node -e 'import("./parking/availability.js").then(m=>{const fs=require("fs");con
 
 - TDX 需要 client id／secret，**瀏覽器不直接呼叫 TDX**。金鑰只存在 repo 的 Actions secrets
   `TDX_CLIENT_ID`、`TDX_CLIENT_SECRET`，由 `.github/workflows/update-tdx-availability.yml` 使用；
-  網頁只讀同站的靜態檔 `parking/data/availability.json`：
+  網頁只讀同站的靜態檔 `data/availability.json`：
   ```json
   { "generated_at": "…+08:00", "source": "…TDX…", "update_time": "…", "matched": 265, "count": 257,
     "items": { "<parkings.json 的 id>": { "avail": 12, "total": 290, "time": "…+08:00" } } }
@@ -194,8 +203,8 @@ node -e 'import("./parking/availability.js").then(m=>{const fs=require("fs");con
 本機執行（金鑰自行放在環境變數，不要寫進任何會 commit 的檔案）：
 
 ```bash
-TDX_CLIENT_ID=… TDX_CLIENT_SECRET=… node parking/scripts/tdx_availability.mjs
-node --test parking/scripts/test_*.mjs     # 離線測試（TDX、剩餘格數過舊判斷、版本字串、臺中市地點過濾），不需要金鑰
+TDX_CLIENT_ID=… TDX_CLIENT_SECRET=… node scripts/tdx_availability.mjs
+node --test scripts/test_*.mjs     # 離線測試（TDX、剩餘格數過舊判斷、版本字串、臺中市地點過濾），不需要金鑰
 ```
 
 ## 改前端時：更新版本字串（快取破壞）
@@ -206,12 +215,12 @@ GitHub Pages 對所有檔案送 `Cache-Control: max-age=600`，而且不能自�
 - `index.html`：`./app.css?v=…`、`./config.js?v=…`、`./app.js?v=…`
 - `app.js`：`import … from "./availability.js?v=…"`（ES module 的 import 不會繼承上層的查詢字串，所以要寫在路徑裡）
 
-版本只有一個來源：`parking/ASSET_VERSION`（臺灣時間 `YYYYMMDDHHmmss`；不用 git hash，因為版本本身就在下一個 commit 裡）。
+版本只有一個來源：`ASSET_VERSION`（臺灣時間 `YYYYMMDDHHmmss`；不用 git hash，因為版本本身就在下一個 commit 裡）。
 **改了 HTML／JS／CSS／config.js 要 commit 時**，先執行：
 
 ```bash
-node parking/scripts/bump-asset-version.mjs           # 寫 ASSET_VERSION，並更新 index.html 與 app.js 的所有 ?v=
-node parking/scripts/bump-asset-version.mjs --check   # 只檢查是否一致
+node scripts/bump-asset-version.mjs           # 寫 ASSET_VERSION，並更新 index.html 與 app.js 的所有 ?v=
+node scripts/bump-asset-version.mjs --check   # 只檢查是否一致
 ```
 
 新增要載入的前端檔案時，記得加進腳本裡的 `TARGETS`。每 5 分鐘的 TDX 工作流程**不要**執行它
@@ -242,7 +251,7 @@ node parking/scripts/bump-asset-version.mjs --check   # 只檢查是否一致
 4. 回到這個 repo：**Settings → Secrets and variables → Actions → New repository secret**
    - Name：`GOOGLE_MAPS_API_KEY`
    - Secret：貼上金鑰
-5. 刪掉 `parking/cache/geocache.json`，再手動跑一次 workflow，就會用 Google 全部重查一遍。
+5. 刪掉 `cache/geocache.json`，再手動跑一次 workflow，就會用 Google 全部重查一遍。
 
 ### 自動補上 Google `place_id`（選用）
 
@@ -261,14 +270,14 @@ node parking/scripts/bump-asset-version.mjs --check   # 只檢查是否一致
 ## 本機測試（選用）
 
 ```bash
-pip install -r parking/scripts/requirements.txt
+pip install -r scripts/requirements.txt
 
-python parking/scripts/test_scrape.py     # 離線測試解析邏輯與 place_id 補值，不連網
-python parking/scripts/scrape.py          # 抓表格
-python parking/scripts/geocode.py         # 產生 parking/data/parkings.json
-python parking/scripts/geocode.py --limit 20   # 只先處理 20 筆，測試用
+python scripts/test_scrape.py     # 離線測試解析邏輯與 place_id 補值，不連網
+python scripts/scrape.py          # 抓表格
+python scripts/geocode.py         # 產生 data/parkings.json
+python scripts/geocode.py --limit 20   # 只先處理 20 筆，測試用
 
-cd parking && python -m http.server 8000  # 開 http://localhost:8000
+python -m http.server 8000        # 在 repo 根目錄執行，開 http://localhost:8000
 ```
 
 本機看地圖時，若瀏覽器金鑰的參照網址沒加 `http://localhost:*`，地圖區會顯示「暫時無法顯示」，
@@ -292,15 +301,15 @@ cd parking && python -m http.server 8000  # 開 http://localhost:8000
 
 | 症狀 | 處理 |
 | --- | --- |
-| 網頁顯示「資料載入失敗」 | `parking/data/parkings.json` 還沒產生，去 Actions 手動跑一次。 |
+| 網頁顯示「資料載入失敗」 | `data/parkings.json` 還沒產生，去 Actions 手動跑一次。 |
 | 卡片沒有「剩 N 格」、只有燈號 | 看 Actions「更新 TDX 剩餘車位」是否失敗（金鑰過期、TDX 維護、配對數驟降都會讓它停下而不覆蓋舊檔）；排程延遲超過 30 分鐘時網頁也會自動改回燈號。 |
 | Actions 在 commit 那步失敗，寫 permission denied | Settings → Actions → General → Workflow permissions 要設成 **Read and write**。 |
 | 爬蟲失敗「只解析到 N 筆」 | 對方網站改版了。`scripts/scrape.py` 的 `COLUMN_MAP` 是用表頭文字比對，把新欄位名稱加進去即可。程式刻意在這種情況中止，不會覆蓋掉原本正確的資料。 |
-| 某幾個停車場座標偏掉 | 原始資料的「位置」欄常常只有路名沒門牌，只能定位到路段。可以直接編輯 `parking/cache/geocache.json` 裡那一筆的 `lat`／`lng`，之後更新會沿用你改的值。 |
+| 某幾個停車場座標偏掉 | 原始資料的「位置」欄常常只有路名沒門牌，只能定位到路段。可以直接編輯 `cache/geocache.json` 裡那一筆的 `lat`／`lng`，之後更新會沿用你改的值。 |
 | 詳情顯示「找不到對應地點」或沒有評論 | Google 上沒有這個停車場、或名稱對不上。可以等每日排程補上 `place_id`；也可清除瀏覽器的網站資料重試。 |
 | 評分區塊說「沒有開放給這個網站使用」 | 瀏覽器金鑰沒有啟用 Places API (New)，或參照網址限制不含目前網址。 |
 | 地點搜尋沒反應 | 沒有可用的 Google Places 時會改用 OpenStreetMap 免費服務，偶爾限流，稍等再試。 |
-| 地圖區顯示「尚未設定 Google 地圖金鑰」 | `parking/config.js` 的 `GOOGLE_MAPS_API_KEY` 是空的。 |
+| 地圖區顯示「尚未設定 Google 地圖金鑰」 | `config.js` 的 `GOOGLE_MAPS_API_KEY` 是空的。 |
 | 地圖區顯示「Google 地圖暫時無法顯示」 | 括號內會寫原因：帳單未啟用、API 未啟用、網址未列在參照網址限制中、金鑰無效等，照上面「上線前的 Google Cloud 設定」檢查。 |
 
 ## 資料來源與免責

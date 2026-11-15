@@ -4,8 +4,8 @@
 把爬到的停車場資料轉成含經緯度的前端資料檔。
 
 流程：
-  parking/cache/parkings_raw.json  ──┐
-  parking/cache/geocache.json  ─────┼──► parking/data/parkings.json
+  cache/parkings_raw.json  ──┐
+  cache/geocache.json  ─────┼──► data/parkings.json
                             │
         Google Places / Geocoding API（只查快取沒有的項目）
 
@@ -18,10 +18,10 @@
 不會重查既有座標；New API 沒啟用或查詢失敗只會印警告，照常輸出資料。
 
 用法：
-    python parking/scripts/geocode.py                # 一般執行（用快取）
-    python parking/scripts/geocode.py --refresh-all  # 忽略快取全部重查（會計費，慎用）
-    python parking/scripts/geocode.py --provider osm # 強制使用 Nominatim
-    python parking/scripts/geocode.py --no-place-ids # 不補 place_id
+    python scripts/geocode.py                # 一般執行（用快取）
+    python scripts/geocode.py --refresh-all  # 忽略快取全部重查（會計費，慎用）
+    python scripts/geocode.py --provider osm # 強制使用 Nominatim
+    python scripts/geocode.py --no-place-ids # 不補 place_id
 """
 
 from __future__ import annotations

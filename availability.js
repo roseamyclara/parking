@@ -241,7 +241,7 @@ export function createAvailability({ getItems, onChange, interval = 60000, stale
 /* =====================================================================
  * 剩餘車位「數字」：TDX（交通部運輸資料流通服務平臺）
  *
- * 瀏覽器不直接呼叫 TDX（需要金鑰）。GitHub Actions 約每 5 分鐘用 parking/scripts/tdx_availability.mjs
+ * 瀏覽器不直接呼叫 TDX（需要金鑰）。GitHub Actions 約每 5 分鐘用 scripts/tdx_availability.mjs
  * 抓一次、配對好，寫成同站的 data/availability.json；這裡只讀那個靜態檔。
  * 數字是「自小客車位」，不含機車。檔案不存在（剛部署、Actions 還沒跑）時安靜地什麼都不做，畫面照舊用燈號。
  * ===================================================================== */

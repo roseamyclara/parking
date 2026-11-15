@@ -8,8 +8,8 @@
  *       沒有數字的停車場用臺中市交通局開放資料的燈號（availability.js），都與 Google 金鑰無關。
  * 沒有金鑰或載入失敗時，清單／搜尋／篩選／離我最近／地點搜尋（Nominatim）照常可用。
  */
-import { createAvailability, createCounts, countKey, STATUS } from "./availability.js?v=20261115113349";
-import { TC_BOUNDS, keepPrediction, isTaichungPlace, autocompleteRequest } from "./region.js?v=20261115113349";
+import { createAvailability, createCounts, countKey, STATUS } from "./availability.js?v=20261115121119";
+import { TC_BOUNDS, keepPrediction, isTaichungPlace, autocompleteRequest } from "./region.js?v=20261115121119";
 
 const DATA_URL = "./data/parkings.json";
 const API_KEY = String(window.GOOGLE_MAPS_API_KEY || "").trim();
@@ -1876,7 +1876,7 @@ if (API_KEY) {
 } else {
   G.ready = Promise.resolve(false);
   showMapMsg("尚未設定 Google 地圖金鑰",
-    "<p>請在 <code>parking/config.js</code> 設定 <code>GOOGLE_MAPS_API_KEY</code> 後重新整理，地圖就會出現。</p>" +
+    "<p>請在 <code>config.js</code> 設定 <code>GOOGLE_MAPS_API_KEY</code> 後重新整理，地圖就會出現。</p>" +
     "<p>在那之前，停車場清單、搜尋、篩選、離我最近、即時車位與「導航」連結都可以正常使用。</p>");
 }
 

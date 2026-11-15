@@ -1,5 +1,5 @@
 /* 只收臺中市的地點：Google 地點建議的請求參數，以及前端的地址／座標檢查。
- * 純函式、不碰 DOM，可以用 Node 測試（parking/scripts/test_region.mjs）。
+ * 純函式、不碰 DOM，可以用 Node 測試（scripts/test_region.mjs）。
  */
 
 // 涵蓋整個臺中市（西：大甲／大安／梧棲／龍井海岸；東：和平區到雪山、南湖大山；南：霧峰／大里；北：大甲／后里／和平北界）。

@@ -3,7 +3,7 @@
 """
 爬取臺中市停車資訊網「身障免銷單服務已上線停車場」表格。
 
-輸出：parking/cache/parkings_raw.json
+輸出：cache/parkings_raw.json
 
 設計原則：
   * 不依賴網站的 CSS class 或 id（政府網站改版頻繁），改用表頭文字比對欄位。

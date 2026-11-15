@@ -5,9 +5,9 @@
  *   路外停車場即時剩餘車位 /api/basic/v1/Parking/OffStreet/ParkingAvailability/City/Taichung
  *
  * 用法（金鑰只從環境變數讀取，本程式不會印出金鑰或 access token）：
- *   TDX_CLIENT_ID=… TDX_CLIENT_SECRET=… node parking/scripts/tdx_availability.mjs
+ *   TDX_CLIENT_ID=… TDX_CLIENT_SECRET=… node scripts/tdx_availability.mjs
  *
- * 輸出 parking/data/availability.json，以 parkings.json 的 id 為鍵：
+ * 輸出 data/availability.json，以 parkings.json 的 id 為鍵：
  *   { generated_at, source, update_time, matched, count, items: { "<id>": { avail, total, time } } }
  *   matched = 名稱／座標配對到 TDX 的座數；count = 其中有新鮮小型車數字、寫進 items 的座數。
  * 數字一律是「自小客車位」（SpaceType 1），不是含機車的總數。

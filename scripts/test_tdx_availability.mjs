@@ -1,4 +1,4 @@
-// 離線測試：node --test parking/scripts/
+// 離線測試：node --test scripts/
 // 不需要網路或真的 TDX 金鑰；HTTP 層全部用假的 fetch。
 import test from "node:test";
 import assert from "node:assert/strict";

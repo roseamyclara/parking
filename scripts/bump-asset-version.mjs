@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // 前端靜態檔快取破壞：產生新的版本字串（臺灣時間 YYYYMMDDHHmmss），
-// 寫進 parking/ASSET_VERSION，並更新 index.html 與 app.js 裡所有 ?v=。
+// 寫進 ASSET_VERSION，並更新 index.html 與 app.js 裡所有 ?v=。
 //
-//   node parking/scripts/bump-asset-version.mjs          # 用現在的臺灣時間
-//   node parking/scripts/bump-asset-version.mjs --check  # 只檢查是否一致，不改檔（不一致時以非 0 結束）
+//   node scripts/bump-asset-version.mjs          # 用現在的臺灣時間
+//   node scripts/bump-asset-version.mjs --check  # 只檢查是否一致，不改檔（不一致時以非 0 結束）
 //
 // 改了 index.html／app.js／availability.js／region.js／app.css／config.js 要 commit 時執行一次。
 // 不要放進每 5 分鐘的 TDX 工作流程（availability.json 自己有 ?t= 每分鐘換一次）。
