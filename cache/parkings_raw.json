@@ -1,9 +1,9 @@
 {
   "source_url": "https://tcparking.taichung.gov.tw/ParkWeb/Pages/PublicService/LoveCardSchedule",
   "source_title": "臺中市停車管理處開通停車場時程表",
-  "page_updated": "2026-10-27",
-  "scraped_at": "2026-11-16T04:54:32+08:00",
-  "count": 290,
+  "page_updated": "2026-11-16",
+  "scraped_at": "2026-11-17T08:04:43+08:00",
+  "count": 291,
   "items": [
     {
       "seq": "1",
@@ -2324,6 +2324,14 @@
       "location": "臺中市西區美村路1段400號",
       "district": "西區",
       "address": "臺中市西區美村路1段400號"
+    },
+    {
+      "seq": "291",
+      "name": "大里區永隆停車場",
+      "access": "車辨進，多卡通出",
+      "location": "臺中市大里區永隆路(近興大南街口)",
+      "district": "大里區",
+      "address": "臺中市大里區永隆路(近興大南街口)"
     }
   ]
 }

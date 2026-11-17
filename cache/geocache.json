@@ -3320,5 +3320,16 @@
     "source": "nominatim",
     "v": 2,
     "cached_at": "2026-10-28T04:19:52+08:00"
+  },
+  "大里區永隆停車場|臺中市大里區永隆路(近興大南街口)": {
+    "lat": 24.099417,
+    "lng": 120.67786,
+    "precision": "DISTRICT",
+    "approx": true,
+    "matched": "大里區",
+    "formatted": "大里區, 田寮, 臺中市, 臺灣",
+    "source": "nominatim",
+    "v": 2,
+    "cached_at": "2026-11-17T08:04:45+08:00"
   }
 }

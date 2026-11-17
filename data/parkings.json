@@ -1,11 +1,11 @@
 {
-  "generated_at": "2026-11-16T04:54:32+08:00",
+  "generated_at": "2026-11-17T08:04:45+08:00",
   "source_url": "https://tcparking.taichung.gov.tw/ParkWeb/Pages/PublicService/LoveCardSchedule",
-  "page_updated": "2026-10-27",
-  "scraped_at": "2026-11-16T04:54:32+08:00",
-  "count": 290,
-  "geocoded": 290,
-  "approx": 135,
+  "page_updated": "2026-11-16",
+  "scraped_at": "2026-11-17T08:04:43+08:00",
+  "count": 291,
+  "geocoded": 291,
+  "approx": 136,
   "districts": [
     "中區",
     "中南屯區",
@@ -3953,6 +3953,20 @@
       "lng": 120.662128,
       "precision": "OSM_TERTIARY",
       "geo_source": "nominatim"
+    },
+    {
+      "id": "大里區永隆停車場|臺中市大里區永隆路(近興大南街口)",
+      "seq": "291",
+      "name": "大里區永隆停車場",
+      "access": "車辨進，多卡通出",
+      "location": "臺中市大里區永隆路(近興大南街口)",
+      "district": "大里區",
+      "address": "臺中市大里區永隆路(近興大南街口)",
+      "lat": 24.099417,
+      "lng": 120.67786,
+      "precision": "DISTRICT",
+      "geo_source": "nominatim",
+      "approx": true
     }
   ]
 }
