@@ -50,7 +50,9 @@ jobs:
           git commit -m "chore(parking): 更新 TDX 剩餘車位 $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
           # 每日停車場資料更新可能同時 push，先 rebase 再推，失敗時重試幾次
           for i in 1 2 3; do
-            git pull --rebase origin "${GITHUB_REF_NAME}" && git push origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            # 衝突時以這次抓到的最新車位資料為準（rebase 中 theirs = 正在重放的本次 commit）
+            git pull --rebase -X theirs origin "${GITHUB_REF_NAME}" && git push origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            git rebase --abort 2>/dev/null || true
             echo "push 失敗，第 $i 次重試"
             sleep $((i * 5))
           done
