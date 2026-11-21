@@ -13,6 +13,7 @@
  * 數字一律是「自小客車位」（SpaceType 1），不是含機車的總數。
  *
  * 抓不到或配對異常時直接以非 0 結束，不覆蓋原本的好檔案。
+ * TDX 暫時故障（HTTP 5xx／429／網路錯誤）會先重試，仍失敗則跳過本輪、結束碼 0，保留舊檔。
  */
 
 import fs from "node:fs";
@@ -120,29 +121,89 @@ export function isoTaipei(d) {
   return t + "+08:00";
 }
 
-async function getJSON(fetchImpl, url, opts, what) {
-  const res = await fetchImpl(url, opts);
-  if (!res.ok) throw new Error(what + " HTTP " + res.status);   // 不印回應內容，避免帶出任何認證資訊
-  return res.json();
+export const DEFAULT_RETRY_DELAYS_MS = [5000, 10000]; // 最多再試 2 次，間隔約 5 秒、10 秒
+
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** HTTP 429／5xx，或 fetch 丟出的網路／逾時錯誤，視為暫時故障，可重試或跳過本輪。 */
+export function isTransientError(err) {
+  if (!err) return false;
+  if (err.status != null && Number.isFinite(+err.status)) {
+    const s = +err.status;
+    if (s === 429 || (s >= 500 && s <= 599)) return true;
+    if (s > 0) return false;
+  }
+  const msg = String(err.message || err);
+  const m = msg.match(/\bHTTP (\d{3})\b/);
+  if (m) {
+    const s = +m[1];
+    return s === 429 || (s >= 500 && s <= 599);
+  }
+  const name = err.name || "";
+  const code = err.code || (err.cause && err.cause.code) || "";
+  if (name === "AbortError" || name === "TimeoutError") return true;
+  if (/^(ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET)$/.test(code)) return true;
+  if (name === "TypeError" && /fetch failed/i.test(msg)) return true;
+  if (/socket hang up|ECONNRESET|ETIMEDOUT|ENOTFOUND|network/i.test(msg)) return true;
+  return false;
+}
+
+export function transientDetail(err) {
+  const msg = String(err && (err.message || err));
+  const m = msg.match(/\bHTTP (\d{3})\b/);
+  return m ? "HTTP " + m[1] : "網路錯誤";
+}
+
+export function handleCliError(err, { log = console.log, error = console.error, exit = process.exit } = {}) {
+  if (isTransientError(err)) {
+    log("TDX 暫時無法連線（" + transientDetail(err) + "），本輪跳過，保留舊資料");
+    exit(0);
+    return;
+  }
+  error("TDX 剩餘車位更新失敗：" + err.message);
+  exit(1);
+}
+
+async function getJSON(fetchImpl, url, opts, what, retry = {}) {
+  const sleep = retry.sleep || defaultSleep;
+  const delays = retry.delays || DEFAULT_RETRY_DELAYS_MS;
+  const attempts = delays.length + 1;
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) await sleep(delays[i - 1]);
+    try {
+      const res = await fetchImpl(url, opts);
+      if (res.ok) return res.json();
+      // 不印回應內容，避免帶出任何認證資訊
+      lastErr = Object.assign(new Error(what + " HTTP " + res.status), { status: res.status });
+      if (!isTransientError(lastErr)) throw lastErr;
+    } catch (e) {
+      lastErr = e;
+      if (!isTransientError(e)) throw e;
+    }
+  }
+  throw lastErr;
 }
 
 /** 取得 access token。錯誤訊息只含 HTTP 狀態碼。 */
-export async function getToken({ clientId, clientSecret, fetchImpl = fetch }) {
+export async function getToken({ clientId, clientSecret, fetchImpl = fetch, sleep, delays } = {}) {
   if (!clientId || !clientSecret) throw new Error("缺少 TDX_CLIENT_ID / TDX_CLIENT_SECRET 環境變數");
   const body = new URLSearchParams({ grant_type: "client_credentials", client_id: clientId, client_secret: clientSecret });
   const j = await getJSON(fetchImpl, TOKEN_URL, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body,
-  }, "TDX token");
+  }, "TDX token", { sleep, delays });
   if (!j || !j.access_token) throw new Error("TDX token 回應沒有 access_token");
   return j.access_token;
 }
 
-export async function fetchTdx({ token, fetchImpl = fetch }) {
+export async function fetchTdx({ token, fetchImpl = fetch, sleep, delays } = {}) {
   const j = await getJSON(fetchImpl, DATA_URL, {
     headers: { authorization: "Bearer " + token, accept: "application/json" },
-  }, "TDX ParkingAvailability");
+  }, "TDX ParkingAvailability", { sleep, delays });
   if (!j || !Array.isArray(j.ParkingAvailabilities) || !j.ParkingAvailabilities.length) {
     throw new Error("TDX 回應格式不符或沒有資料");
   }
@@ -165,13 +226,13 @@ export async function fetchMoto({ fetchImpl = fetch } = {}) {
  */
 export async function run({
   env = process.env, fetchImpl = fetch, parkingsPath = DEFAULT_PARKINGS, outPath = DEFAULT_OUT,
-  now = new Date(), minMatched = 50, log = console.log,
+  now = new Date(), minMatched = 50, log = console.log, sleep, delays,
 } = {}) {
   const ours = JSON.parse(fs.readFileSync(parkingsPath, "utf8")).items;
   if (!Array.isArray(ours) || !ours.length) throw new Error("parkings.json 沒有停車場");
 
-  const token = await getToken({ clientId: env.TDX_CLIENT_ID, clientSecret: env.TDX_CLIENT_SECRET, fetchImpl });
-  const [tdx, moto] = await Promise.all([fetchTdx({ token, fetchImpl }), fetchMoto({ fetchImpl })]);
+  const token = await getToken({ clientId: env.TDX_CLIENT_ID, clientSecret: env.TDX_CLIENT_SECRET, fetchImpl, sleep, delays });
+  const [tdx, moto] = await Promise.all([fetchTdx({ token, fetchImpl, sleep, delays }), fetchMoto({ fetchImpl })]);
   const { data, stats } = buildAvailability({ ours, tdx, moto, now });
   stats.moto = moto.length;
 
@@ -209,6 +270,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
           "| 檔案有變動 | " + (r.changed ? "是" : "否") + " |\n");
       }
     },
-    (e) => { console.error("TDX 剩餘車位更新失敗：" + e.message); process.exit(1); },
+    (e) => { handleCliError(e); },
   );
 }

@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   carSpaces, toOfficial, buildAvailability, run, getToken, TOKEN_URL, DATA_URL, MOTO_URL,
+  isTransientError, handleCliError, DEFAULT_RETRY_DELAYS_MS,
 } from "./tdx_availability.mjs";
 
 const FAKE_ID = "fake-client-id";
@@ -105,8 +106,11 @@ test("buildAvailability 一個 TDX 停車場不會同時給我們兩筆", () => 
 });
 
 /* ---------- 假 HTTP 層 ---------- */
-function fakeFetch({ tokenStatus = 200, dataStatus = 200, data = tdx } = {}) {
+function fakeFetch({ tokenStatus = 200, dataStatus = 200, data = tdx, tokenQueue, dataQueue } = {}) {
   const calls = [];
+  const tokenSeq = tokenQueue ? tokenQueue.slice() : null;
+  const dataSeq = dataQueue ? dataQueue.slice() : null;
+  const nextStatus = (seq, fallback) => (seq && seq.length ? seq.shift() : fallback);
   const fn = async (url, opts = {}) => {
     calls.push({ url, opts });
     const json = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
@@ -115,11 +119,15 @@ function fakeFetch({ tokenStatus = 200, dataStatus = 200, data = tdx } = {}) {
       assert.equal(opts.method, "POST");
       assert.equal(b.get("grant_type"), "client_credentials");
       if (b.get("client_id") !== FAKE_ID || b.get("client_secret") !== FAKE_SECRET) return json(401, { error: "invalid_client" });
-      return json(tokenStatus, { access_token: FAKE_TOKEN, token_type: "Bearer", expires_in: 86400 });
+      const next = nextStatus(tokenSeq, tokenStatus);
+      if (next instanceof Error) throw next;
+      return json(next, { access_token: FAKE_TOKEN, token_type: "Bearer", expires_in: 86400 });
     }
     if (url === DATA_URL) {
       if (opts.headers?.authorization !== "Bearer " + FAKE_TOKEN) return json(401, {});
-      return json(dataStatus, data);
+      const next = nextStatus(dataSeq, dataStatus);
+      if (next instanceof Error) throw next;
+      return json(next, data);
     }
     if (url === MOTO_URL) return json(200, moto);
     throw new Error("unexpected url " + url);
@@ -138,6 +146,7 @@ function tmpFiles(prev) {
 }
 const env = { TDX_CLIENT_ID: FAKE_ID, TDX_CLIENT_SECRET: FAKE_SECRET };
 const quiet = () => {};
+const noWait = async () => {};
 
 test("getToken 缺環境變數時報錯", async () => {
   await assert.rejects(getToken({ clientId: "", clientSecret: "", fetchImpl: fakeFetch() }), /TDX_CLIENT_ID/);
@@ -172,7 +181,7 @@ for (const [name, opts, re] of [
   test("run 失敗時不覆蓋原檔：" + name, async () => {
     const good = JSON.stringify({ count: 2, items: { a: { avail: 1, total: 2, time: UPD } } });
     const f = tmpFiles(good);
-    await assert.rejects(run({ env, fetchImpl: fakeFetch(opts), ...f, minMatched: 1, log: quiet }), re);
+    await assert.rejects(run({ env, fetchImpl: fakeFetch(opts), ...f, minMatched: 1, log: quiet, sleep: noWait }), re);
     assert.equal(fs.readFileSync(f.outPath, "utf8"), good);
   });
 }
@@ -194,4 +203,101 @@ test("錯誤訊息不含金鑰", async () => {
     assert.ok(!e.message.includes("wrong-secret"));
     assert.ok(!e.message.includes(FAKE_ID));
   }
+});
+
+test("isTransientError 只把 429／5xx 與網路錯誤當成暫時故障", () => {
+  assert.equal(isTransientError(Object.assign(new Error("TDX token HTTP 500"), { status: 500 })), true);
+  assert.equal(isTransientError(new Error("TDX ParkingAvailability HTTP 429")), true);
+  assert.equal(isTransientError(new Error("TDX token HTTP 401")), false);
+  assert.equal(isTransientError(new Error("TDX 回應格式不符或沒有資料")), false);
+  assert.equal(isTransientError(Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } })), true);
+  assert.equal(isTransientError(Object.assign(new Error("aborted"), { name: "AbortError" })), true);
+});
+
+test("run token 500 後重試成功，並寫檔", async () => {
+  const f = tmpFiles();
+  const fetchImpl = fakeFetch({ tokenQueue: [500, 200] });
+  const r = await run({ env, fetchImpl, ...f, minMatched: 1, log: quiet, sleep: noWait });
+  assert.equal(r.changed, true);
+  assert.equal(fetchImpl.calls.filter((c) => c.url === TOKEN_URL).length, 2);
+  assert.equal(JSON.parse(fs.readFileSync(f.outPath, "utf8")).items.a.avail, 79);
+});
+
+test("run 資料 429 後重試成功", async () => {
+  const f = tmpFiles();
+  const fetchImpl = fakeFetch({ dataQueue: [429, 200] });
+  const r = await run({ env, fetchImpl, ...f, minMatched: 1, log: quiet, sleep: noWait });
+  assert.equal(r.changed, true);
+  assert.equal(fetchImpl.calls.filter((c) => c.url === DATA_URL).length, 2);
+});
+
+test("run 網路錯誤後重試成功", async () => {
+  const f = tmpFiles();
+  const fetchImpl = fakeFetch({ tokenQueue: [Object.assign(new TypeError("fetch failed"), { cause: { code: "ETIMEDOUT" } }), 200] });
+  const r = await run({ env, fetchImpl, ...f, minMatched: 1, log: quiet, sleep: noWait });
+  assert.equal(r.changed, true);
+  assert.equal(fetchImpl.calls.filter((c) => c.url === TOKEN_URL).length, 2);
+});
+
+test("run 連續 500 耗盡重試後不覆蓋原檔，且屬暫時錯誤", async () => {
+  const good = JSON.stringify({ count: 2, items: { a: { avail: 1, total: 2, time: UPD } } });
+  const f = tmpFiles(good);
+  const fetchImpl = fakeFetch({ tokenStatus: 500 });
+  const err = await run({ env, fetchImpl, ...f, minMatched: 1, log: quiet, sleep: noWait }).then(
+    () => { assert.fail("應該失敗"); },
+    (e) => e,
+  );
+  assert.match(err.message, /token HTTP 500/);
+  assert.equal(isTransientError(err), true);
+  assert.equal(fetchImpl.calls.filter((c) => c.url === TOKEN_URL).length, 3);
+  assert.equal(fs.readFileSync(f.outPath, "utf8"), good);
+});
+
+test("重試間隔約 5 秒再 10 秒", async () => {
+  const slept = [];
+  const fetchImpl = fakeFetch({ tokenStatus: 500 });
+  await assert.rejects(run({
+    env, fetchImpl, ...tmpFiles(), minMatched: 1, log: quiet,
+    sleep: async (ms) => { slept.push(ms); },
+  }), /token HTTP 500/);
+  assert.deepEqual(DEFAULT_RETRY_DELAYS_MS, [5000, 10000]);
+  assert.deepEqual(slept, [5000, 10000]);
+});
+
+test("run token 401 不重試，並以非暫時錯誤失敗", async () => {
+  const good = JSON.stringify({ count: 2, items: { a: { avail: 1, total: 2, time: UPD } } });
+  const f = tmpFiles(good);
+  const fetchImpl = fakeFetch({ tokenStatus: 401 });
+  const err = await run({ env, fetchImpl, ...f, minMatched: 1, log: quiet, sleep: noWait }).then(
+    () => { assert.fail("應該失敗"); },
+    (e) => e,
+  );
+  assert.match(err.message, /token HTTP 401/);
+  assert.equal(isTransientError(err), false);
+  assert.equal(fetchImpl.calls.filter((c) => c.url === TOKEN_URL).length, 1);
+  assert.equal(fs.readFileSync(f.outPath, "utf8"), good);
+});
+
+test("handleCliError 暫時錯誤時 exit 0 並印跳過訊息", () => {
+  const logs = [];
+  let code;
+  handleCliError(Object.assign(new Error("TDX token HTTP 500"), { status: 500 }), {
+    log: (m) => logs.push(m),
+    error: () => { assert.fail("不該走 error"); },
+    exit: (c) => { code = c; },
+  });
+  assert.equal(code, 0);
+  assert.equal(logs[0], "TDX 暫時無法連線（HTTP 500），本輪跳過，保留舊資料");
+});
+
+test("handleCliError 認證錯誤時 exit 1", () => {
+  const errors = [];
+  let code;
+  handleCliError(new Error("TDX token HTTP 401"), {
+    log: () => { assert.fail("不該走 log"); },
+    error: (m) => errors.push(m),
+    exit: (c) => { code = c; },
+  });
+  assert.equal(code, 1);
+  assert.equal(errors[0], "TDX 剩餘車位更新失敗：TDX token HTTP 401");
 });
