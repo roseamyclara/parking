@@ -1,10 +1,8 @@
 name: 更新 TDX 剩餘車位
 
 on:
-  schedule:
-    # 每 5 分鐘（GitHub 的排程是盡力而為，尖峰時可能延遲或略過）
-    - cron: "*/5 * * * *"
-  workflow_dispatch:        # 允許手動觸發
+  # 已停用每 5 分鐘排程，改由前端「即時更新」按鈕透過 Supabase Edge Function 按需查詢
+  workflow_dispatch:        # 保留手動觸發，必要時仍可手動更新靜態 data/availability.json
 
 permissions:
   contents: write

@@ -241,9 +241,10 @@ export function createAvailability({ getItems, onChange, interval = 60000, stale
 /* =====================================================================
  * 剩餘車位「數字」：TDX（交通部運輸資料流通服務平臺）
  *
- * 瀏覽器不直接呼叫 TDX（需要金鑰）。GitHub Actions 約每 5 分鐘用 scripts/tdx_availability.mjs
- * 抓一次、配對好，寫成同站的 data/availability.json；這裡只讀那個靜態檔。
- * 數字是「自小客車位」，不含機車。檔案不存在（剛部署、Actions 還沒跑）時安靜地什麼都不做，畫面照舊用燈號。
+ * 瀏覽器不直接呼叫 TDX（需要金鑰）。
+ * 網頁啟動時只讀一次同站的靜態檔 data/availability.json（不再定時自動輪詢），
+ * 使用者點擊「即時更新」時才透過 Supabase Edge Function 代理查詢最新 TDX 數字。
+ * 數字是「自小客車位」，不含機車。靜態檔不存在時安靜地什麼都不做，畫面照舊用燈號。
  * ===================================================================== */
 export const COUNTS_URL = "data/availability.json";
 export const COUNTS_SOURCE_NAME = "交通部運輸資料流通服務平臺（TDX）";
@@ -283,12 +284,14 @@ export function parseCounts(json, now = Date.now(), maxAgeMs = 30 * 60000) {
 }
 
 /**
- * 定期讀 data/availability.json：頁面可見時每 60 秒，背景暫停；失敗時保留上一份
- * （每次查詢時仍依各場回報時間判斷是否過舊，所以斷線很久也不會一直顯示舊數字）。
+ * 讀取 TDX 剩餘車位數字：
+ * - start() 只在啟動時讀一次靜態 data/availability.json，不排程自動輪詢也不監聽 visibilitychange。
+ * - refreshLive(liveUrl, opts) 供使用者點擊「即時更新」時向 Edge Function 按需查詢；失敗時保留既有資料不動。
+ * - 每次查詢 lookup / size / updateTime 都會惰性檢查 30 分鐘過舊期限。
  */
-export function createCounts({ onChange, interval = 60000, maxAgeMs = 30 * 60000, fetchImpl, url = COUNTS_URL }) {
+export function createCounts({ onChange, maxAgeMs = 30 * 60000, fetchImpl, url = COUNTS_URL }) {
   const doFetch = fetchImpl || ((u, o) => fetch(u, o));
-  const st = { json: null, map: new Map(), parsedAt: 0, tried: 0, timer: 0, inflight: null, started: false, missing: false };
+  const st = { json: null, map: new Map(), parsedAt: 0, inflight: null, liveInflight: null, started: false, missing: false };
 
   function current() {
     // 每分鐘重算一次過舊判斷（不用等下一次抓檔）
@@ -296,21 +299,25 @@ export function createCounts({ onChange, interval = 60000, maxAgeMs = 30 * 60000
     return st.map;
   }
 
+  function applyData(json) {
+    if (!json || typeof json.items !== "object" || json.items === null) throw new Error("格式不符");
+    st.missing = false;
+    st.json = json;
+    st.map = parseCounts(json, Date.now(), maxAgeMs);
+    st.parsedAt = Date.now();
+    onChange();
+    return json;
+  }
+
   async function refresh() {
     if (st.inflight) return st.inflight;
-    st.tried = Date.now();
     st.inflight = (async () => {
       try {
         const res = await doFetch(countsUrl(Date.now(), 60000, url), { cache: "no-store" });
         if (res.status === 404) { st.missing = true; return; }   // 尚未產生：只用燈號
         if (!res.ok) throw new Error("HTTP " + res.status);
         const json = await res.json();
-        if (!json || typeof json.items !== "object") throw new Error("格式不符");
-        st.missing = false;
-        st.json = json;
-        st.map = parseCounts(json, Date.now(), maxAgeMs);
-        st.parsedAt = Date.now();
-        onChange();
+        applyData(json);
       } catch (e) {
         console.warn("剩餘車位數字暫時無法取得", e);
         const before = st.map.size;
@@ -322,26 +329,48 @@ export function createCounts({ onChange, interval = 60000, maxAgeMs = 30 * 60000
     return st.inflight;
   }
 
-  function schedule() {
-    clearTimeout(st.timer);
-    if (document.hidden) return;
-    const wait = st.tried ? Math.max(0, interval - (Date.now() - st.tried)) : 0;
-    st.timer = setTimeout(async () => { await refresh(); schedule(); }, wait);
+  async function refreshLive(liveUrl, { headers = {}, method = "POST", timeoutMs = 20000 } = {}) {
+    if (!liveUrl) throw new Error("缺少即時更新網址");
+    if (st.liveInflight) return st.liveInflight;
+    const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+    const kill = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : 0;
+    st.liveInflight = (async () => {
+      try {
+        const res = await doFetch(liveUrl, {
+          method,
+          headers,
+          cache: "no-store",
+          signal: ctrl && ctrl.signal,
+        });
+        let json = null;
+        try { json = await res.json(); } catch (_) { json = null; }
+        if (!res.ok) {
+          const err = new Error((json && json.error) || "HTTP " + res.status);
+          err.status = res.status;
+          err.body = json;
+          err.code = json && json.code ? json.code : null;
+          throw err;
+        }
+        return applyData(json);
+      } finally {
+        clearTimeout(kill);
+        st.liveInflight = null;
+      }
+    })();
+    return st.liveInflight;
   }
 
   function start() {
     if (st.started) return;
     st.started = true;
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) clearTimeout(st.timer);
-      else schedule();
-    });
-    schedule();
+    refresh();
   }
 
   return {
     start,
     refresh,
+    applyData,
+    refreshLive,
     lookup: (id) => current().get(id) || null,
     get size() { return current().size; },
     /** TDX 整體更新時間（TDX 的時鐘） */

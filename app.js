@@ -4,12 +4,13 @@
  *       桌機是左側面板＋右側地圖。同一套 DOM，用 CSS 斷點切換。
  * 地圖：Google Maps JavaScript API（動態載入 importLibrary）
  *       + AdvancedMarkerElement + @googlemaps/markerclusterer
- * 即時車位：剩餘格數來自 TDX（由 GitHub Actions 寫成 data/availability.json），
- *       沒有數字的停車場用臺中市交通局開放資料的燈號（availability.js），都與 Google 金鑰無關。
+ * 即時車位：剩餘格數來自 TDX（啟動時讀一次靜態 data/availability.json，點擊「即時更新」時經由
+ *       Supabase Edge Function 按需查詢），沒有數字的停車場用臺中市交通局開放資料的燈號（availability.js），
+ *       都與 Google 金鑰無關。
  * 沒有金鑰或載入失敗時，清單／搜尋／篩選／離我最近／地點搜尋（Nominatim）照常可用。
  */
-import { createAvailability, createCounts, countKey, STATUS } from "./availability.js?v=20261115121119";
-import { TC_BOUNDS, keepPrediction, isTaichungPlace, autocompleteRequest } from "./region.js?v=20261115121119";
+import { createAvailability, createCounts, countKey, STATUS } from "./availability.js?v=20261125110622";
+import { TC_BOUNDS, keepPrediction, isTaichungPlace, autocompleteRequest } from "./region.js?v=20261125110622";
 
 const DATA_URL = "./data/parkings.json";
 const API_KEY = String(window.GOOGLE_MAPS_API_KEY || "").trim();
@@ -41,6 +42,7 @@ const el = {};
 ["q", "clearQ", "searchForm", "searchbar", "btnNear", "btnFilter", "filterBadge", "fDistrict", "sortSeg", "sortHint",
  "accessChips", "accessCount", "placeSearchBtn", "placeHintText", "originBar", "originName", "clearOrigin",
  "sheet", "sheetHead", "sheetBody", "grab", "grabLabel", "list", "listTitle", "resultCount", "listSub", "resetFilters",
+ "btnRefreshTdx", "refreshTdxLbl",
  "detail", "detailBack", "dName", "filtersTitle", "filtersDone", "aboutLink", "about", "availNote",
  "metaCount", "footDates", "toast", "liveCount", "mappane", "map", "mapMsg", "themeSeg", "themeSystemLbl",
  "sugg", "suggList", "suggFoot", "suggStatus",
@@ -253,8 +255,89 @@ const avail = createAvailability({
   getItems: () => state.items,
   onChange: paintAvailability,
 });
-// 剩餘格數（TDX，同站靜態檔）。有數字就優先用數字；燈號只當顏色參考，不從燈號推算數字。
+// 剩餘格數（TDX）：啟動時讀一次靜態檔，點擊「即時更新」才透過 Edge Function 按需查詢。
+// 有數字就優先用數字；燈號只當顏色參考，不從燈號推算數字。
 const counts = createCounts({ onChange: paintAvailability });
+
+const tdxLive = { busy: false, cooldownUntil: 0, timer: 0 };
+
+function syncRefreshBtn() {
+  if (!el.btnRefreshTdx) return;
+  const rem = Math.ceil((tdxLive.cooldownUntil - Date.now()) / 1000);
+  if (tdxLive.busy) {
+    el.btnRefreshTdx.disabled = true;
+    el.btnRefreshTdx.setAttribute("aria-busy", "true");
+    el.refreshTdxLbl.textContent = "更新中…";
+    el.btnRefreshTdx.setAttribute("aria-label", "正在即時更新剩餘車位");
+    el.btnRefreshTdx.title = "正在向 TDX 取得最新剩餘格數";
+  } else if (rem > 0) {
+    el.btnRefreshTdx.disabled = true;
+    el.btnRefreshTdx.setAttribute("aria-busy", "false");
+    el.refreshTdxLbl.textContent = "即時更新 (" + rem + "s)";
+    el.btnRefreshTdx.setAttribute("aria-label", "即時更新冷卻中，請於 " + rem + " 秒後再試");
+    el.btnRefreshTdx.title = "共用快取保護中，請於 " + rem + " 秒後再更新";
+  } else {
+    el.btnRefreshTdx.disabled = false;
+    el.btnRefreshTdx.setAttribute("aria-busy", "false");
+    el.refreshTdxLbl.textContent = "即時更新";
+    el.btnRefreshTdx.setAttribute("aria-label", "即時更新剩餘車位");
+    el.btnRefreshTdx.title = "向 TDX 查詢最新剩餘格數";
+  }
+}
+
+function startRefreshCooldown(seconds) {
+  const sec = Math.min(120, Math.max(60, Math.ceil(Number(seconds) || 60)));
+  tdxLive.cooldownUntil = Date.now() + sec * 1000;
+  clearInterval(tdxLive.timer);
+  syncRefreshBtn();
+  tdxLive.timer = setInterval(() => {
+    if (Date.now() >= tdxLive.cooldownUntil) {
+      clearInterval(tdxLive.timer);
+      tdxLive.timer = 0;
+      tdxLive.cooldownUntil = 0;
+    }
+    syncRefreshBtn();
+  }, 1000);
+}
+
+async function refreshTdxLive() {
+  if (tdxLive.busy || tdxLive.cooldownUntil > Date.now()) return;
+  const cfg = window.SUPABASE_CONFIG || {};
+  if (!cfg.url || !cfg.anonKey) {
+    toast("即時更新服務尚未設定，目前顯示既有資料");
+    return;
+  }
+  const endpoint = String(cfg.url).replace(/\/$/, "") + "/functions/v1/tdx-availability";
+  tdxLive.busy = true;
+  syncRefreshBtn();
+  try {
+    const json = await counts.refreshLive(endpoint, {
+      headers: {
+        apikey: cfg.anonKey,
+        Authorization: "Bearer " + cfg.anonKey,
+      },
+    });
+    if (json && json.capped) {
+      toast("已達今日即時更新上限，目前顯示最新快取資料");
+    } else if (counts.updateTime) {
+      toast("已更新剩餘格數（TDX " + fmtTpe(counts.updateTime) + " 臺灣時間）");
+    } else {
+      toast("已更新資料，目前尚無 30 分鐘內的 TDX 剩餘格數");
+    }
+    startRefreshCooldown(json && json.next_refresh_in_seconds);
+  } catch (err) {
+    console.warn("即時更新剩餘格數失敗", err);
+    if (err && err.status === 429 && err.body && err.body.capped) {
+      toast("已達今日即時更新上限，目前顯示既有資料");
+      startRefreshCooldown(60);
+    } else {
+      toast("即時更新服務尚未設定或暫時無法連線，目前顯示既有資料");
+    }
+  } finally {
+    tdxLive.busy = false;
+    syncRefreshBtn();
+  }
+}
 
 function statusOf(id) {
   const a = avail.lookup(id);
@@ -1836,6 +1919,7 @@ el.placeSearchBtn.addEventListener("click", () => searchPlace(state.query));
 el.btnNear.addEventListener("click", locateMe);
 el.clearOrigin.addEventListener("click", clearOrigin);
 el.resetFilters.addEventListener("click", resetFilters);
+if (el.btnRefreshTdx) el.btnRefreshTdx.addEventListener("click", refreshTdxLive);
 el.fDistrict.addEventListener("change", () => { state.district = el.fDistrict.value; applyFilters(); fitToResults(); });
 el.sortSeg.addEventListener("change", (e) => {
   if (e.target.name !== "sort") return;
@@ -1921,7 +2005,7 @@ fetch(DATA_URL, { cache: "no-cache" })
     applyFilters();
     if (G.map) fitToResults();
     avail.start();      // 即時車位：與 Google 地圖金鑰無關，載不到也不影響其他功能
-    counts.start();     // 剩餘格數：同站靜態檔，404（尚未產生）時只用燈號
+    counts.start();     // 剩餘格數：啟動時讀一次靜態檔，之後按「即時更新」才向 Edge Function 查詢
   })
   .catch((err) => {
     el.list.innerHTML = '<li class="empty">資料載入失敗（' + esc(err.message) +

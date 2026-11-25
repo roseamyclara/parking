@@ -76,6 +76,103 @@ test("createCounts：抓檔後 lookup 有 143；時間超過 30 分鐘後 lookup
   assert.equal(counts.size, 0);
 });
 
+test("createCounts().start() 只在啟動時讀一次靜態檔，不排程定時輪詢也不註冊 visibilitychange", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: at("2026-11-15T00:13:00+08:00") });
+  const prevDoc = globalThis.document;
+  let visListeners = 0;
+  globalThis.document = {
+    hidden: false,
+    addEventListener(ev) { if (ev === "visibilitychange") visListeners++; },
+  };
+  try {
+    const urls = [];
+    let changes = 0;
+    const counts = createCounts({
+      onChange() { changes++; },
+      fetchImpl: async (u) => { urls.push(u); return { ok: true, status: 200, json: async () => fixture }; },
+    });
+    counts.start();
+    counts.start();   // 重複呼叫也不會多抓
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(urls.length, 1);
+    assert.equal(changes, 1);
+    assert.equal(visListeners, 0);
+
+    // 即使經過 10 分鐘，也不會自動重新抓 TDX 檔
+    t.mock.timers.tick(10 * 60000);
+    await Promise.resolve();
+    assert.equal(urls.length, 1);
+  } finally {
+    if (prevDoc === undefined) delete globalThis.document;
+    else globalThis.document = prevDoc;
+  }
+});
+
+test("createCounts().refreshLive 成功時更新數字並觸發 onChange；失敗時保留既有資料", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: at("2026-11-15T00:13:00+08:00") });
+  const liveFixture = {
+    update_time: "2026-11-15T00:14:00+08:00",
+    generated_at: "2026-11-15T00:14:05+08:00",
+    cached: false,
+    capped: false,
+    next_refresh_in_seconds: 90,
+    items: {
+      [SHIZHENG]: { avail: 88, total: 144, time: "2026-11-15T00:13:50+08:00" },
+    },
+  };
+  const calls = [];
+  let mode = "static";
+  let changes = 0;
+  const counts = createCounts({
+    onChange() { changes++; },
+    fetchImpl: async (u, opts) => {
+      calls.push({ u, opts });
+      if (mode === "static") return { ok: true, status: 200, json: async () => fixture };
+      if (mode === "live-ok") return { ok: true, status: 200, json: async () => liveFixture };
+      if (mode === "live-503") return { ok: false, status: 503, json: async () => ({ error: "TDX credentials not configured", code: "NOT_CONFIGURED" }) };
+      if (mode === "live-net") throw new TypeError("fetch failed");
+      throw new Error("unexpected mode " + mode);
+    },
+  });
+
+  // 1. 先讀靜態檔
+  await counts.refresh();
+  assert.equal(counts.lookup(SHIZHENG).avail, 143);
+  assert.equal(changes, 1);
+
+  // 2. 按需即時更新失敗（503）→ 既有資料不動
+  mode = "live-503";
+  await assert.rejects(
+    counts.refreshLive("https://example.supabase.co/functions/v1/tdx-availability", {
+      headers: { apikey: "anon", Authorization: "Bearer anon" },
+    }),
+    (err) => err.status === 503 && err.code === "NOT_CONFIGURED",
+  );
+  assert.equal(counts.lookup(SHIZHENG).avail, 143);
+  assert.equal(changes, 1);
+
+  // 3. 按需即時更新成功 → 更新為 88 並觸發 onChange
+  mode = "live-ok";
+  const res = await counts.refreshLive("https://example.supabase.co/functions/v1/tdx-availability", {
+    headers: { apikey: "anon", Authorization: "Bearer anon" },
+  });
+  assert.equal(res.next_refresh_in_seconds, 90);
+  assert.equal(counts.lookup(SHIZHENG).avail, 88);
+  assert.equal(changes, 2);
+  assert.equal(calls.at(-1).opts.method, "POST");
+  assert.equal(calls.at(-1).opts.headers.apikey, "anon");
+
+  // 4. 網路錯誤 → 仍保留最新資料 88
+  mode = "live-net";
+  await assert.rejects(
+    counts.refreshLive("https://example.supabase.co/functions/v1/tdx-availability"),
+    /fetch failed/,
+  );
+  assert.equal(counts.lookup(SHIZHENG).avail, 88);
+  assert.equal(changes, 2);
+});
+
 test("bump-asset-version：臺灣時間 14 碼，並改寫所有 ?v=", () => {
   assert.equal(taipeiStamp(new Date("2026-11-14T16:13:05Z")), "20261115001305");
   const html = '<link href="./app.css"><script src="./config.js?v=1"></script><script src="./app.js?v=20260101000000" type="module">';

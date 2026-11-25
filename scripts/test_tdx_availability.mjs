@@ -9,6 +9,11 @@ import {
   carSpaces, toOfficial, buildAvailability, run, getToken, TOKEN_URL, DATA_URL, MOTO_URL,
   isTransientError, handleCliError, DEFAULT_RETRY_DELAYS_MS,
 } from "./tdx_availability.mjs";
+import {
+  carSpaces as edgeCarSpaces,
+  toOfficial as edgeToOfficial,
+  buildAvailability as edgeBuildAvailability,
+} from "../supabase/functions/tdx-availability/tdx.ts";
 
 const FAKE_ID = "fake-client-id";
 const FAKE_SECRET = "fake-client-secret";
@@ -300,4 +305,14 @@ test("handleCliError 認證錯誤時 exit 1", () => {
   });
   assert.equal(code, 1);
   assert.equal(errors[0], "TDX 剩餘車位更新失敗：TDX token HTTP 401");
+});
+
+test("Edge Function tdx.ts 與 tdx_availability.mjs 配對與計算結果完全一致", () => {
+  const now = new Date("2026-11-14T15:55:00Z");
+  assert.deepEqual(edgeCarSpaces(tdx.ParkingAvailabilities[0]), carSpaces(tdx.ParkingAvailabilities[0]));
+  assert.deepEqual(edgeToOfficial(tdx.ParkingAvailabilities, moto), toOfficial(tdx.ParkingAvailabilities, moto));
+  assert.deepEqual(
+    edgeBuildAvailability({ ours, tdx, moto, now }),
+    buildAvailability({ ours, tdx, moto, now }),
+  );
 });

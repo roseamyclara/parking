@@ -14,8 +14,8 @@
         ▼
   data/parkings.json ──► ③ index.html（Google 地圖）
                               ▲
-  交通部 TDX 剩餘車位 ── tdx_availability.mjs（約每 5 分鐘，GitHub Actions）
-                          └► data/availability.json
+  交通部 TDX 剩餘車位 ──► Supabase Edge Function（tdx-availability，按「即時更新」才查詢）
+                    └──► data/availability.json（靜態初始快取，僅保留手動 workflow_dispatch）
 ```
 
 ## 儲存庫與部署
@@ -25,17 +25,19 @@
 - GitHub Pages：**Settings → Pages → Deploy from a branch → `main` / `(root)`**；網址仍是 **https://roseamyclara.github.io/parking/**。
 - 兩個 GitHub Actions 工作流程：
   - `.github/workflows/update-parking.yml`：每日 00:00（臺灣時間）爬表格＋地理編碼，也可手動觸發；`main` 上改了 `scripts/` 或此檔時也會跑。
-  - `.github/workflows/update-tdx-availability.yml`：約每 5 分鐘更新 `data/availability.json`（concurrency group `tdx`）。
+  - `.github/workflows/update-tdx-availability.yml`：已停用每 5 分鐘排程，僅保留手動觸發（`workflow_dispatch`），必要時可手動更新靜態 `data/availability.json`（concurrency group `tdx`）。
 
 ## 檔案在哪
 
 | 路徑 | 用途 |
 | --- | --- |
 | `.github/workflows/update-parking.yml` | 每日排程（**一定要放在 `.github/workflows/` 裡才會執行**） |
-| `.github/workflows/update-tdx-availability.yml` | 約每 5 分鐘抓 TDX 剩餘車位，寫 `data/availability.json` |
+| `.github/workflows/update-tdx-availability.yml` | 手動觸發抓 TDX 剩餘車位寫 `data/availability.json`（已移除 5 分鐘 cron） |
+| `supabase/migrations/20261125000000_tdx_availability_cache.sql` | Supabase SQL migration：90 秒共用快取表、每日次數上限表／原子 RPC、TDX token 快取表 |
+| `supabase/functions/tdx-availability/` | Supabase Edge Function（`index.ts`＋`tdx.ts`）：按需代理 TDX 即時剩餘車位查詢 |
 | `index.html` | 網站本體（入口） |
 | `app.js`、`app.css` | 前端程式與樣式（ES module，無建置步驟） |
-| `availability.js` | 即時車位：交通局燈號（瀏覽器直接抓）＋讀取 TDX 剩餘格數檔；`matchLots` 配對（可用 Node 測試） |
+| `availability.js` | 即時車位：交通局燈號（瀏覽器直接抓）＋啟動讀一次靜態 TDX 檔與按需「即時更新」；`matchLots` 配對（可用 Node 測試） |
 | `region.js` | 只收臺中市的地點：Autocomplete 的 `locationRestriction`、地址／座標檢查（可用 Node 測試） |
 | `config.js` | **前端設定：Google 地圖瀏覽器金鑰與 Map ID** |
 | `ASSET_VERSION` | 前端靜態檔的版本字串（`?v=`），由 `scripts/bump-asset-version.mjs` 更新 |
@@ -43,7 +45,7 @@
 | `scripts/` | 爬蟲與地理編碼程式 |
 | `cache/` | 中繼檔與座標快取（自動產生、自動 commit） |
 | `data/parkings.json` | 網站讀取的資料檔（自動產生） |
-| `data/availability.json` | TDX 剩餘格數（自動產生；不存在時網頁只顯示燈號） |
+| `data/availability.json` | TDX 靜態初始剩餘格數檔（選用；不存在或過舊時網頁顯示燈號，按「即時更新」取最新數字） |
 
 ## 功能
 
@@ -52,7 +54,7 @@
 - ⭐ 停車場詳情裡的「Google 的評分與評論」（只在打開詳情時載入，見下方說明）
 - 🧭 「離我最近」瀏覽器定位排序
 - 🏷 依行政區、免銷單進出場方式篩選（收在搜尋列右側的「篩選與設定」）
-- 🔢 剩餘格數「剩 N 格」（小型車，交通部 TDX，約每 5 分鐘），顯示在卡片、詳情與地圖標記上
+- 🔢 剩餘格數「剩 N 格」（小型車，交通部 TDX）：開啟網頁載入既有快取，點擊清單上方的「即時更新」按鈕透過 Supabase Edge Function 查詢最新數字，顯示在卡片、詳情與地圖標記上
 - 🚦 沒有剩餘格數的停車場顯示即時車位燈號（尚有車位／即將滿場／已滿），約每分鐘更新
 - 🗺 Google 地圖標記自動分群，點選後在面板顯示詳情、一鍵開 Google 導航
 - 📱 手機：全螢幕地圖＋浮動搜尋列＋可拖曳的底部面板（三段高度，Android 返回鍵會先收起面板）；
@@ -172,39 +174,51 @@ window.GOOGLE_MAPS_MAP_ID  = "DEMO_MAP_ID"; // 進階標記需要；可換成自
 node -e 'import("./availability.js").then(m=>{const fs=require("fs");const r=m.matchLots(JSON.parse(fs.readFileSync("data/parkings.json")).items,JSON.parse(fs.readFileSync("/tmp/opendata.json")));console.log(r.size)})'
 ```
 
-## 剩餘車位數（TDX）
+## 剩餘車位數（TDX，按需即時更新）
 
 來源：[交通部運輸資料流通服務平臺（TDX）](https://tdx.transportdata.tw/)
 `/api/basic/v1/Parking/OffStreet/ParkingAvailability/City/Taichung`。
 
-- TDX 需要 client id／secret，**瀏覽器不直接呼叫 TDX**。金鑰只存在 repo 的 Actions secrets
-  `TDX_CLIENT_ID`、`TDX_CLIENT_SECRET`，由 `.github/workflows/update-tdx-availability.yml` 使用；
-  網頁只讀同站的靜態檔 `data/availability.json`：
-  ```json
-  { "generated_at": "…+08:00", "source": "…TDX…", "update_time": "…", "matched": 265, "count": 257,
-    "items": { "<parkings.json 的 id>": { "avail": 12, "total": 290, "time": "…+08:00" } } }
-  ```
-  `matched` 是配對到 TDX 的座數，`count` 是其中有新鮮數字、寫進 `items` 的座數。
+- **改為按需查詢、全面維持免費方案**：原先每 5 分鐘跑一次的 GitHub Actions 排程已移除（`.github/workflows/update-tdx-availability.yml` 僅保留手動 `workflow_dispatch`），前端也不再定時自動輪詢 TDX。網頁啟動時只讀取一次靜態 `data/availability.json`，使用者點擊清單上方的「即時更新」按鈕時，才透過 Supabase Edge Function `tdx-availability` 向 TDX 取得最新剩餘車位數。
+- **金鑰全程留在伺服器端**：瀏覽器不直接呼叫 TDX。`TDX_CLIENT_ID` 與 `TDX_CLIENT_SECRET` 只存在 Supabase Edge Function Secrets（及選用的 Actions secrets），絕不放入前端程式、回應內容或錯誤訊息。
+- **嚴格 CORS 與額度保護**：
+  - Edge Function 只允許來源 `https://roseamyclara.github.io`（其他來源回應 HTTP 403）。
+  - **90 秒共用快取**（執行個體記憶體＋Supabase `public.tdx_availability_cache`）與同執行個體併發合併：90 秒內不管多少人點「即時更新」，最多只打一次 TDX。
+  - **每日上限 90 次**（臺灣時間 `Asia/Taipei`，透過原子 RPC `public.claim_tdx_fetch` 記錄於 `public.tdx_daily_usage`）：超過上限時優先回傳最新快取（標示 `capped: true`），前端顯示提示；若完全沒有快取則回傳 HTTP 429。
+  - **OAuth Token 快取**（`public.tdx_token_cache`＋記憶體，到期前 120 秒重抓），避免重複呼叫 TDX token endpoint。
+  - 若尚未執行 SQL migration，Edge Function 會自動退回記憶體快取與記憶體每日計數，不會直接回 500。
+  - 前端按鈕更新完成後會進入 60–120 秒冷卻倒數，避免連續誤觸；若 Edge Function 尚未部署、尚未設定 Secrets 或離線，會保留既有資料不清空並顯示友善提示。
 - **只算小型車**：TDX 頂層的 `TotalSpaces／AvailableSpaces` 含機車（例：自由一期立體 470／199，
   其中自小客車 290／79、機車 180／120）。程式取 `Availabilities` 裡 `SpaceType === 1`（自小客車）的
   `NumberOfSpaces／AvailableSpaces`；只有沒有 type 1 時才退回頂層數字。
 - **配對**：TDX 的 `CarParkName.Zh_tw` 和交通局開放資料的 `Position` 是同一種「區-機關-名稱P」字串，
-  所以直接沿用 `matchLots`（TDX 的 `CarParkID` 和交通局 `ID` 不同，不能拿來對）。座標從交通局資料依完全相同的名稱借用，
-  讓 45 公尺座標備援也能用。一座 TDX 停車場絕不會同時配給本站兩筆。目前約 265／290 座配得到。
-- **過舊不顯示**：個別停車場的 `DataCollectTime` 比 TDX 整體更新時間舊 60 分鐘以上就不寫進檔案
-  （實測有幾座停在好幾個月前）；網頁端再以手機時鐘檢查，超過 30 分鐘的數字也不顯示，改回燈號。
-- **更新頻率**：排程是 `*/5 * * * *`，但 GitHub 的 cron 是盡力而為，常常延遲幾分鐘到更久，尖峰時甚至略過。
-  GitHub Pages 的 CDN 另外快取約 10 分鐘，網頁用每分鐘換一次的查詢字串（`?t=…`）加上 `cache: "no-store"` 避開；
-  頁面可見時每 60 秒重讀，切到背景暫停，失敗時保留上一份。
-- **安全閥**：TDX 或配對失敗、有數字的停車場少於 50 座、或比上一份少一半以上時，程式以錯誤結束、**不覆蓋原檔**；
-  內容沒變時不重寫，也就不會有空 commit。push 前先 `git pull --rebase`，避免和每日更新互相卡住。
-- 檔案不存在（剛部署、排程還沒跑過）時網頁照常，只顯示燈號；和 Google 金鑰無關。
+  所以沿用 `matchLots`（`supabase/functions/tdx-availability/tdx.ts` 與根目錄 `availability.js`、`scripts/tdx_availability.mjs` 邏輯一致）。座標從交通局資料依完全相同的名稱借用，讓 45 公尺座標備援也能用。一座 TDX 停車場絕不會同時配給本站兩筆。
+- **過舊不顯示**：個別停車場的 `DataCollectTime` 比 TDX 整體更新時間舊 60 分鐘以上就不納入結果；
+  網頁端再以裝置時鐘惰性檢查，超過 30 分鐘的數字自動不顯示，改回交通局燈號。
+- **回傳格式**（與 `data/availability.json` 相容，另附 `cached`、`capped`、`stale`、`daily_fetches`、`daily_cap`、`next_refresh_in_seconds`）：
+  ```json
+  { "generated_at": "…+08:00", "source": "…TDX…", "update_time": "…", "matched": 265, "count": 257,
+    "items": { "<parkings.json 的 id>": { "avail": 12, "total": 290, "time": "…+08:00" } } }
+  ```
+
+### Supabase 設定與部署步驟
+
+1. **執行 SQL migration**：在 Supabase Dashboard → SQL Editor 執行
+   `supabase/migrations/20261125000000_tdx_availability_cache.sql`（可重複執行；會建立 `tdx_availability_cache`、`tdx_daily_usage`、`tdx_token_cache` 與 `claim_tdx_fetch`，全部啟用 RLS 且不設公開 policy）。
+2. **設定 Edge Function Secrets**（不要寫入任何程式碼或 commit）：
+   ```bash
+   supabase secrets set TDX_CLIENT_ID="你的_TDX_CLIENT_ID" TDX_CLIENT_SECRET="你的_TDX_CLIENT_SECRET"
+   ```
+3. **部署 Edge Function**：
+   ```bash
+   supabase functions deploy tdx-availability
+   ```
 
 本機執行（金鑰自行放在環境變數，不要寫進任何會 commit 的檔案）：
 
 ```bash
 TDX_CLIENT_ID=… TDX_CLIENT_SECRET=… node scripts/tdx_availability.mjs
-node --test scripts/test_*.mjs     # 離線測試（TDX、剩餘格數過舊判斷、版本字串、臺中市地點過濾），不需要金鑰
+node --test scripts/test_*.mjs     # 離線測試（TDX、按需更新、剩餘格數過舊判斷、版本字串、臺中市地點過濾），不需要金鑰
 ```
 
 ## 改前端時：更新版本字串（快取破壞）
@@ -223,8 +237,8 @@ node scripts/bump-asset-version.mjs           # 寫 ASSET_VERSION，並更新 in
 node scripts/bump-asset-version.mjs --check   # 只檢查是否一致
 ```
 
-新增要載入的前端檔案時，記得加進腳本裡的 `TARGETS`。每 5 分鐘的 TDX 工作流程**不要**執行它
-（`availability.json` 有自己的 `?t=` 每分鐘換一次）；`parkings.json` 用 `cache: "no-cache"` 讀取，也不需要版本。
+新增要載入的前端檔案時，記得加進腳本裡的 `TARGETS`。手動更新靜態 TDX 檔的工作流程**不要**執行它
+（`availability.json` 有自己的 `?t=` 查詢字串）；`parkings.json` 用 `cache: "no-cache"` 讀取，也不需要版本。
 新版本最慢約 10 分鐘後（`index.html` 的 CDN／瀏覽器快取過期）才會被回訪的瀏覽器拿到。
 
 ## 日常維護
@@ -293,8 +307,8 @@ python -m http.server 8000        # 在 repo 根目錄執行，開 http://localh
 - 手機寬度（≤ 820px）是全螢幕地圖＋底部面板：拖曳把手可在三段高度間切換；點卡片或標記會打開詳情；
   返回鍵依序關閉篩選 → 詳情 → 把面板降回最低，不會直接離開本頁；Esc 也一樣
 - 「篩選與設定 → 外觀」切換深色時，地圖也變深色
-- 清單標題下方出現「剩餘格數 HH:MM（TDX）」，多數卡片顯示「剩 N 格」、地圖標記右上角有小數字；
-  刪掉或改名 `data/availability.json` 時退回「燈號 HH:MM 更新」與燈號；封鎖 motoretag.taichung.gov.tw 時其他功能照常
+- 清單標題列有「即時更新」按鈕：按下後向 Supabase Edge Function 取得最新 TDX 剩餘格數（顯示「剩餘格數 HH:MM（TDX）」與倒數冷卻）；
+  Edge Function 尚未部署／設定或離線時顯示友善提示並保留既有資料；封鎖 motoretag.taichung.gov.tw 時其他功能照常
 ```
 
 ## 疑難排解
@@ -302,7 +316,7 @@ python -m http.server 8000        # 在 repo 根目錄執行，開 http://localh
 | 症狀 | 處理 |
 | --- | --- |
 | 網頁顯示「資料載入失敗」 | `data/parkings.json` 還沒產生，去 Actions 手動跑一次。 |
-| 卡片沒有「剩 N 格」、只有燈號 | 看 Actions「更新 TDX 剩餘車位」是否失敗（金鑰過期、TDX 維護、配對數驟降都會讓它停下而不覆蓋舊檔）；排程延遲超過 30 分鐘時網頁也會自動改回燈號。 |
+| 卡片沒有「剩 N 格」、只有燈號 | TDX 已改為按需查詢，請點清單上方的「即時更新」按鈕；若超過 30 分鐘未更新或達每日上限且無快取，網頁會自動退回顯示交通局燈號。若按「即時更新」提示尚未設定，請確認已執行 SQL migration、設定 `TDX_CLIENT_ID`／`TDX_CLIENT_SECRET` Secrets 並部署 `tdx-availability` Edge Function。 |
 | Actions 在 commit 那步失敗，寫 permission denied | Settings → Actions → General → Workflow permissions 要設成 **Read and write**。 |
 | 爬蟲失敗「只解析到 N 筆」 | 對方網站改版了。`scripts/scrape.py` 的 `COLUMN_MAP` 是用表頭文字比對，把新欄位名稱加進去即可。程式刻意在這種情況中止，不會覆蓋掉原本正確的資料。 |
 | 某幾個停車場座標偏掉 | 原始資料的「位置」欄常常只有路名沒門牌，只能定位到路段。可以直接編輯 `cache/geocache.json` 裡那一筆的 `lat`／`lng`，之後更新會沿用你改的值。 |

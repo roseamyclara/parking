@@ -27,7 +27,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400..700&amp;display=swap" media="print" onload="this.media='all'">
 <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400..700&amp;display=swap"></noscript>
-<link rel="stylesheet" href="./app.css?v=20261115121119">
+<link rel="stylesheet" href="./app.css?v=20261125110622">
 </head>
 <body>
 <a class="skip" href="#list">跳到停車場清單</a>
@@ -95,7 +95,13 @@
             <h2 class="head-title" id="listTitle"><span id="resultCount">載入中…</span></h2>
             <p class="head-sub" id="listSub"></p>
           </div>
-          <button type="button" class="textbtn" id="resetFilters" hidden>清除篩選</button>
+          <div class="head-actions">
+            <button type="button" class="btn tonal refreshbtn" id="btnRefreshTdx" aria-label="即時更新剩餘車位" title="向 TDX 查詢最新剩餘格數">
+              <svg class="refresh-ico" aria-hidden="true" viewBox="0 0 24 24" width="16" height="16"><path d="M20 12a8 8 0 1 1-2.34-5.66L20 8.5M20 4v4.5h-4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span class="refresh-lbl" id="refreshTdxLbl">即時更新</span>
+            </button>
+            <button type="button" class="textbtn" id="resetFilters" hidden>清除篩選</button>
+          </div>
         </div>
 
         <div class="head head-detail" hidden>
@@ -156,7 +162,7 @@
             <p id="metaCount">載入中…</p>
             <p id="footDates"></p>
             <p>停車場名單：<a href="https://tcparking.taichung.gov.tw/ParkWeb/Pages/PublicService/LoveCardSchedule" target="_blank" rel="noopener">臺中市停車資訊網 — 身障免銷單服務已上線停車場</a>（每日 00:00 自動更新）。</p>
-            <p>剩餘格數：<a href="https://tdx.transportdata.tw/" target="_blank" rel="noopener">交通部運輸資料流通服務平臺（TDX）</a>路外停車場即時剩餘車位，由本站的 GitHub Actions 約每 5 分鐘抓一次（GitHub 排程可能延遲，網頁快取也可能再晚幾分鐘）。顯示的是<strong>小型車（自小客車）</strong>車位，不含機車；時間為停車場回報給 TDX 的時間（臺灣時間），超過 30 分鐘沒更新就不顯示數字。以停車場名稱比對，少數停車場對不到或沒有數字。</p>
+            <p>剩餘格數：<a href="https://tdx.transportdata.tw/" target="_blank" rel="noopener">交通部運輸資料流通服務平臺（TDX）</a>路外停車場即時剩餘車位。開啟網頁時會先載入既有的快取資料，點擊清單上方的「即時更新」才會透過本站代理服務向 TDX 查詢最新剩餘格數（共用 90 秒快取與每日上限，避免過度查詢）。顯示的是<strong>小型車（自小客車）</strong>車位，不含機車；時間為停車場回報給 TDX 的時間（臺灣時間），超過 30 分鐘沒更新就不顯示數字。以停車場名稱比對，少數停車場對不到或沒有數字。</p>
             <p>即時車位燈號：<a href="https://motoretag.taichung.gov.tw/DataAPI/api/ParkingAPIV2/Opendata" target="_blank" rel="noopener">臺中市政府交通局「路外剩餘車位」開放資料</a>，約每分鐘更新。沒有剩餘格數的停車場改顯示「尚有車位／即將滿場／已滿」燈號（不是剩餘車位數）；以名稱比對，部分停車場沒有即時資料。<span id="availNote"></span></p>
             <p>評分與評論：來自 Google 地圖的使用者內容，只有在打開某座停車場的詳情時才會載入（並暫存在這台裝置上約 7 天），可能對應不到或沒有資料；<strong>不是交通局的官方資料</strong>，也不代表本站立場。搜尋時的「地點」建議同樣由 Google 提供。</p>
             <p>地圖：Google 地圖。座標由地理編碼推估，實際位置請以現場標示為準；免銷單服務內容與適用對象，一律以臺中市政府交通局公告為準。</p>
@@ -176,8 +182,8 @@
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <p class="visually-hidden" id="liveCount" role="status" aria-live="polite"></p>
 
-<script src="./config.js?v=20261115121119"></script>
-<script src="./app.js?v=20261115121119" type="module"></script>
+<script src="./config.js?v=20261125110622"></script>
+<script src="./app.js?v=20261125110622" type="module"></script>
 <script src="./assets/supabase-config.js?v=20261115121119"></script>
 <script src="./assets/visit.js?v=20261115121119"></script>
 </body>
